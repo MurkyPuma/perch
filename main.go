@@ -104,8 +104,8 @@ func dialServer(autostart bool) (*msgConn, error) {
 	}
 	go cmd.Wait() // reap if it ever exits while we're alive
 	logf.Close()
-	for i := 0; i < 100; i++ {
-		time.Sleep(30 * time.Millisecond)
+	for i := 0; i < 250; i++ {
+		time.Sleep(40 * time.Millisecond)
 		if conn, err := net.Dial("unix", sockPath()); err == nil {
 			return newMsgConn(conn), nil
 		}
