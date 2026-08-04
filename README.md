@@ -50,6 +50,13 @@ you naming anything.
 go install github.com/MurkyPuma/vmux@latest
 ```
 
+`go install` puts the binary in `$(go env GOPATH)/bin` (usually `~/go/bin`),
+which is not on your PATH by default. If `vmux` is not found afterwards:
+
+```sh
+echo 'export PATH="$HOME/go/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
+```
+
 Or from a clone:
 
 ```sh
