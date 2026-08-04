@@ -1,0 +1,123 @@
+# vmux
+
+A terminal multiplexer that gets out of your way. Sessions you can actually
+see, switch with one key, and scroll with your mouse.
+
+![vmux live view](assets/live.png)
+
+## Why
+
+tmux is great infrastructure with a rough cockpit. Three things kept biting:
+
+- **Switching sessions is a ritual.** Prefix, then `s`, then navigate a tree.
+- **Scrolling means learning copy-mode.** Your mouse wheel should just work.
+- **You can never tell where you are.** Sessions named `0` and `1` in a dim
+  status bar.
+
+vmux keeps the part of tmux that matters (persistent sessions on a background
+server, detach and reattach at will) and rebuilds the cockpit around those
+three complaints.
+
+## What it does
+
+**One key to go anywhere.** `Ctrl-Space` opens the session palette: type a few
+letters to filter, Enter to switch. If nothing matches, Enter creates a session
+with that name. Switching and creating are the same gesture. Tap `Ctrl-Space`
+twice to bounce between your two most recent sessions like alt-tab.
+
+![session palette](assets/palette.png)
+
+**Scrolling that just works.** Mouse wheel scrolls history, with colors
+preserved. `q` or scrolling back to the bottom returns to live. Inside
+full-screen apps like `less` or `vim` the wheel turns into arrow keys, which is
+what you meant anyway.
+
+![scrollback](assets/scroll.png)
+
+**You always know where you are.** Every session gets a stable identity color
+derived from its name. The current session is highlighted in the status bar,
+the other sessions sit next to it (click one to switch), and your terminal tab
+title follows along.
+
+**One session per project, automatically.** Bare `vmux` inside
+`~/dev/my-app` attaches or creates a session named `my-app`, starting in that
+directory. Your sessions end up mapping one-to-one to your projects without
+you naming anything.
+
+## Install
+
+```sh
+go install github.com/MurkyPuma/vmux@latest
+```
+
+Or from a clone:
+
+```sh
+git clone https://github.com/MurkyPuma/vmux
+cd vmux && go build && cp vmux /usr/local/bin/
+```
+
+Built and tested on macOS. It is a single static binary, so you can also
+`scp` it to a Linux box and get the same setup over SSH (`GOOS=linux go build`).
+
+## Use
+
+```sh
+vmux                # attach or create a session named after the current directory
+vmux api            # attach or create the session "api"
+vmux ls             # list sessions
+vmux kill-server    # stop everything
+```
+
+| Key | Action |
+| --- | --- |
+| `Ctrl-Space` | open the session palette |
+| type + `Enter` | filter sessions, or create one by typing a new name |
+| `Ctrl-Space` `Ctrl-Space` | jump to the previous session (alt-tab) |
+| `1` to `9` | jump to the nth session in the palette |
+| `Ctrl-X` | kill the selected session (in the palette) |
+| `Ctrl-\` | detach, sessions keep running |
+| mouse wheel | scroll history; `q` or `Esc` to return |
+| `PgUp` / `PgDn`, `g` / `G` | move around in scrollback |
+| click a session name | switch to it |
+
+There is no configuration file yet, on purpose. The defaults are the product.
+
+## How it works
+
+A small background server owns the sessions. Each session is one shell on a
+PTY, mirrored into a virtual terminal (via
+[vt10x](https://github.com/hinshun/vt10x)) so the screen can be repainted on
+attach and switch, plus a line-based history buffer that preserves colors for
+scrollback. The client you run in your terminal is a dumb pipe: raw stdin up,
+rendered frames down, over a unix socket. All key handling and rendering is
+server-side, which is what makes detach, reattach, and multi-client attach
+straightforward.
+
+Frames are line-diffed against the previous paint, so live output is cheap and
+flicker-free. Application quirks are translated in the middle: DECCKM arrow
+mode, bracketed paste, alt-screen detection, and mouse passthrough for apps
+that ask for it.
+
+## Not there yet
+
+- Panes and splits (deliberately out for now; sessions are the core primitive)
+- Mouse text selection straight to the system clipboard
+- Search inside scrollback
+- Activity indicators for background sessions
+- Sessions that survive a reboot
+
+## Development
+
+```sh
+go test ./...        # unit tests + an end-to-end test driving a real PTY
+go run ./hack/snap out/   # regenerate the README screenshots
+```
+
+The screenshots above are real: `hack/snap` scripts an actual vmux server and
+client under a PTY, mirrors the client into a virtual terminal, and renders
+the result to PNG with headless Chrome.
+
+## License
+
+MIT
