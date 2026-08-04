@@ -1,0 +1,165 @@
+package main
+
+import (
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/creack/pty"
+)
+
+// term drives one vmux client under a real PTY and accumulates its output.
+type testTerm struct {
+	t    *testing.T
+	ptmx *os.File
+	mu   sync.Mutex
+	buf  []byte
+}
+
+func (tt *testTerm) readPump() {
+	b := make([]byte, 4096)
+	for {
+		n, err := tt.ptmx.Read(b)
+		if n > 0 {
+			tt.mu.Lock()
+			tt.buf = append(tt.buf, b[:n]...)
+			tt.mu.Unlock()
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+// mark returns the current output offset; waitFor searches only after it.
+func (tt *testTerm) mark() int {
+	tt.mu.Lock()
+	defer tt.mu.Unlock()
+	return len(tt.buf)
+}
+
+func (tt *testTerm) waitFor(from int, substr string) {
+	tt.t.Helper()
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		tt.mu.Lock()
+		got := string(tt.buf[min(from, len(tt.buf)):])
+		tt.mu.Unlock()
+		if strings.Contains(got, substr) {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	tt.mu.Lock()
+	tail := string(tt.buf[min(from, len(tt.buf)):])
+	tt.mu.Unlock()
+	if len(tail) > 2000 {
+		tail = tail[len(tail)-2000:]
+	}
+	tt.t.Fatalf("timeout waiting for %q, output tail:\n%q", substr, tail)
+}
+
+func (tt *testTerm) send(s string) {
+	tt.t.Helper()
+	if _, err := tt.ptmx.Write([]byte(s)); err != nil {
+		tt.t.Fatalf("send %q: %v", s, err)
+	}
+}
+
+func startClient(t *testing.T, bin string, env []string, args ...string) *testTerm {
+	t.Helper()
+	cmd := exec.Command(bin, args...)
+	cmd.Env = env
+	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: 100, Rows: 28})
+	if err != nil {
+		t.Fatalf("start client: %v", err)
+	}
+	tt := &testTerm{t: t, ptmx: ptmx}
+	go tt.readPump()
+	t.Cleanup(func() { ptmx.Close(); cmd.Wait() })
+	return tt
+}
+
+func TestEndToEnd(t *testing.T) {
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "vmux")
+	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
+		t.Fatalf("build: %v\n%s", err, out)
+	}
+
+	env := []string{"VMUX_DIR=" + filepath.Join(tmp, "state"), "SHELL=/bin/sh",
+		"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME"), "TERM=xterm-256color"}
+	defer exec.Command(bin, "kill-server").Run()
+	defer func() {
+		cmd := exec.Command(bin, "kill-server")
+		cmd.Env = env
+		cmd.Run()
+	}()
+
+	tt := startClient(t, bin, env, "alpha")
+
+	// shell comes up, commands run
+	m := tt.mark()
+	tt.send("echo hello-from-alpha\r")
+	tt.waitFor(m, "hello-from-alpha")
+
+	// palette opens, typing an unknown name creates a session
+	m = tt.mark()
+	tt.send("\x00")
+	tt.waitFor(m, "vmux sessions")
+	m = tt.mark()
+	tt.send("work\r")
+	tt.waitFor(m, " work ") // status bar segment for the new current session
+	m = tt.mark()
+	tt.send("echo hello-from-work\r")
+	tt.waitFor(m, "hello-from-work")
+
+	// double-tap Ctrl-Space jumps back to the previous session (alt-tab)
+	m = tt.mark()
+	tt.send("\x00\x00")
+	tt.waitFor(m, "hello-from-alpha") // alpha's screen repaints
+
+	// scrollback: generate history, wheel up, indicator appears
+	m = tt.mark()
+	tt.send("seq 1 200\r")
+	tt.waitFor(m, "200")
+	m = tt.mark()
+	tt.send("\x1b[<64;10;10M") // SGR wheel up
+	tt.waitFor(m, "SCROLL")
+	m = tt.mark()
+	tt.send("q")
+	tt.waitFor(m, " alpha ") // live view again
+
+	// vmux ls sees both sessions
+	lsCmd := exec.Command(bin, "ls")
+	lsCmd.Env = env
+	out, err := lsCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("ls: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "alpha") || !strings.Contains(string(out), "work") {
+		t.Fatalf("ls missing sessions:\n%s", out)
+	}
+
+	// detach; sessions survive; reattach sees the old screen
+	m = tt.mark()
+	tt.send("\x1c") // Ctrl-backslash
+	tt.waitFor(m, "detached")
+
+	// the reattached screen shows the tail of seq's output and the status bar
+	tt2 := startClient(t, bin, env, "alpha")
+	m2 := tt2.mark()
+	tt2.waitFor(m2, "199")
+	tt2.waitFor(m2, " alpha ")
+
+	// killing the server tears everything down
+	killCmd := exec.Command(bin, "kill-server")
+	killCmd.Env = env
+	if out, err := killCmd.CombinedOutput(); err != nil {
+		t.Fatalf("kill-server: %v\n%s", err, out)
+	}
+}

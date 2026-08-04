@@ -57,11 +57,18 @@ func (h *History) First() int              { return h.trimmed }
 func (h *History) LineAt(abs int) histLine { return h.lines[abs-h.trimmed] }
 
 func (h *History) pushLine() {
+	styled := h.startSGR != ""
+	for _, b := range h.cur {
+		if b == 0x1b {
+			styled = true
+			break
+		}
+	}
 	line := string(h.cur)
 	if h.startSGR != "" && line != "" {
 		line = h.startSGR + line
 	}
-	if line != "" {
+	if styled && line != "" {
 		line += "\x1b[0m"
 	}
 	h.lines = append(h.lines, histLine{s: line, w: h.curW})

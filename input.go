@@ -6,11 +6,15 @@ import "unicode/utf8"
 // for three intercepts: Ctrl-Space (palette), Ctrl-\ (detach), and SGR mouse
 // reports (which exist because the client terminal has mouse mode on, not
 // because the app asked). In palette/scroll modes we parse keys properly.
+//
+// Events are consumed ONE at a time so a key that changes the client's mode
+// (e.g. Ctrl-Space) routes the rest of the same chunk under the new mode.
 
 type evKind int
 
 const (
-	evRaw evKind = iota
+	evNone evKind = iota
+	evRaw
 	evKey
 	evRune
 	evMouse
@@ -65,7 +69,6 @@ type event struct {
 // event and bytes consumed, or consumed==0 if p is a valid-so-far prefix that
 // needs more bytes, or consumed==-1 if this is not a mouse sequence.
 func parseMouse(p []byte) (mouseEv, int) {
-	// expect: ESC [ < params M|m
 	prefix := []byte{0x1b, '[', '<'}
 	for i, b := range prefix {
 		if i >= len(p) {
@@ -99,97 +102,75 @@ func parseMouse(p []byte) (mouseEv, int) {
 	return mouseEv{}, 0 // incomplete
 }
 
-// tokenizeLive splits input into raw chunks plus intercepted events.
-// rest holds an incomplete trailing sequence to prepend to the next read.
-func tokenizeLive(p []byte) (evs []event, rest []byte) {
-	rawStart := 0
-	flush := func(end int) {
-		if end > rawStart {
-			evs = append(evs, event{kind: evRaw, data: p[rawStart:end]})
-		}
-	}
+// nextEventLive extracts the next event under live-mode rules.
+// incomplete=true means p starts with a possibly-unfinished sequence: stash it
+// and wait for more bytes.
+func nextEventLive(p []byte) (ev event, n int, incomplete bool) {
 	for i := 0; i < len(p); {
 		b := p[i]
 		switch b {
 		case 0x00:
-			flush(i)
-			evs = append(evs, event{kind: evKey, key: keyCtrlSpace})
-			i++
-			rawStart = i
-		case 0x1c:
-			flush(i)
-			evs = append(evs, event{kind: evKey, key: keyCtrlBackslash})
-			i++
-			rawStart = i
-		case 0x1b:
-			me, n := parseMouse(p[i:])
-			if n > 0 {
-				flush(i)
-				evs = append(evs, event{kind: evMouse, mouse: me})
-				i += n
-				rawStart = i
-			} else if n == 0 {
-				// incomplete possible mouse sequence at the end of the chunk
-				flush(i)
-				return evs, append([]byte{}, p[i:]...)
-			} else {
-				i++
+			if i > 0 {
+				return event{kind: evRaw, data: p[:i]}, i, false
 			}
+			return event{kind: evKey, key: keyCtrlSpace}, 1, false
+		case 0x1c:
+			if i > 0 {
+				return event{kind: evRaw, data: p[:i]}, i, false
+			}
+			return event{kind: evKey, key: keyCtrlBackslash}, 1, false
+		case 0x1b:
+			me, mn := parseMouse(p[i:])
+			if mn > 0 {
+				if i > 0 {
+					return event{kind: evRaw, data: p[:i]}, i, false
+				}
+				return event{kind: evMouse, mouse: me}, mn, false
+			}
+			if mn == 0 { // incomplete possible mouse sequence at chunk end
+				if i > 0 {
+					return event{kind: evRaw, data: p[:i]}, i, false
+				}
+				return event{}, 0, true
+			}
+			i++
 		default:
 			i++
 		}
 	}
-	flush(len(p))
-	return evs, nil
+	return event{kind: evRaw, data: p}, len(p), false
 }
 
-// tokenizeKeys parses input into discrete key/rune/mouse events for the
-// palette and scroll modes. Unrecognized sequences are dropped.
-func tokenizeKeys(p []byte) []event {
-	var evs []event
-	for i := 0; i < len(p); {
-		b := p[i]
-		if b == 0x1b {
-			if i == len(p)-1 {
-				evs = append(evs, event{kind: evKey, key: keyEsc})
-				break
+// nextEventKeys extracts one parsed key/rune/mouse event (palette and scroll
+// modes). Always consumes at least one byte; kind evNone means "ignore".
+func nextEventKeys(p []byte) (ev event, n int) {
+	b := p[0]
+	if b == 0x1b {
+		if len(p) == 1 {
+			return event{kind: evKey, key: keyEsc}, 1
+		}
+		if me, mn := parseMouse(p); mn > 0 {
+			return event{kind: evMouse, mouse: me}, mn
+		}
+		if k, kn := parseEscKey(p); kn > 0 {
+			if k != keyNone {
+				return event{kind: evKey, key: k}, kn
 			}
-			me, n := parseMouse(p[i:])
-			if n > 0 {
-				evs = append(evs, event{kind: evMouse, mouse: me})
-				i += n
-				continue
-			}
-			k, n2 := parseEscKey(p[i:])
-			if n2 > 0 {
-				if k != keyNone {
-					evs = append(evs, event{kind: evKey, key: k})
-				}
-				i += n2
-				continue
-			}
-			evs = append(evs, event{kind: evKey, key: keyEsc})
-			i++
-			continue
+			return event{kind: evNone}, kn
 		}
-		if k := ctrlKey(b); k != keyNone {
-			evs = append(evs, event{kind: evKey, key: k})
-			i++
-			continue
-		}
-		if b < 0x20 {
-			i++
-			continue
-		}
-		r, sz := utf8.DecodeRune(p[i:])
-		if r == utf8.RuneError && sz == 1 {
-			i++
-			continue
-		}
-		evs = append(evs, event{kind: evRune, r: r})
-		i += sz
+		return event{kind: evKey, key: keyEsc}, 1
 	}
-	return evs
+	if k := ctrlKey(b); k != keyNone {
+		return event{kind: evKey, key: k}, 1
+	}
+	if b < 0x20 {
+		return event{kind: evNone}, 1
+	}
+	r, sz := utf8.DecodeRune(p)
+	if r == utf8.RuneError && sz == 1 {
+		return event{kind: evNone}, 1
+	}
+	return event{kind: evRune, r: r}, sz
 }
 
 func ctrlKey(b byte) key {
@@ -219,7 +200,7 @@ func ctrlKey(b byte) key {
 }
 
 // parseEscKey parses ESC [ ... and ESC O ... key sequences.
-// Returns consumed==0 when p is not a recognizable prefix.
+// Returns consumed==0 when p cannot be decided yet.
 func parseEscKey(p []byte) (key, int) {
 	if len(p) < 2 {
 		return keyNone, 0

@@ -462,29 +462,36 @@ func (c *client) handleInput(p []byte) {
 	c.mu.Lock()
 	data := append(c.pend, p...)
 	c.pend = nil
-	mode := c.mode
 	c.mu.Unlock()
 
-	switch mode {
-	case modeLive:
-		evs, rest := tokenizeLive(data)
-		if rest != nil {
-			c.mu.Lock()
-			c.pend = rest
-			c.mu.Unlock()
-		}
-		for _, ev := range evs {
+	overlay := false
+	for len(data) > 0 {
+		c.mu.Lock()
+		mode := c.mode
+		c.mu.Unlock()
+		if mode == modeLive {
+			ev, n, incomplete := nextEventLive(data)
+			if incomplete {
+				c.mu.Lock()
+				c.pend = append([]byte{}, data...)
+				c.mu.Unlock()
+				break
+			}
 			c.liveEvent(ev)
+			data = data[n:]
+		} else {
+			ev, n := nextEventKeys(data)
+			switch mode {
+			case modePalette:
+				c.paletteEvent(ev)
+			case modeScroll:
+				c.scrollEvent(ev)
+			}
+			overlay = true
+			data = data[n:]
 		}
-	case modePalette:
-		for _, ev := range tokenizeKeys(data) {
-			c.paletteEvent(ev)
-		}
-		c.scheduleRender()
-	case modeScroll:
-		for _, ev := range tokenizeKeys(data) {
-			c.scrollEvent(ev)
-		}
+	}
+	if overlay {
 		c.scheduleRender()
 	}
 }
