@@ -81,6 +81,9 @@ func startClient(t *testing.T, bin string, env []string, args ...string) *testTe
 	tt := &testTerm{t: t, ptmx: ptmx}
 	go tt.readPump()
 	t.Cleanup(func() { ptmx.Close(); cmd.Wait() })
+	// Wait for the first painted frame so tests don't type into the pty's
+	// canonical-mode echo before the client has attached and gone raw.
+	tt.waitFor(0, "\x1b[?2026l")
 	return tt
 }
 
@@ -152,9 +155,8 @@ func TestEndToEnd(t *testing.T) {
 
 	// the reattached screen shows the tail of seq's output and the status bar
 	tt2 := startClient(t, bin, env, "alpha")
-	m2 := tt2.mark()
-	tt2.waitFor(m2, "199")
-	tt2.waitFor(m2, " alpha ")
+	tt2.waitFor(0, "199")
+	tt2.waitFor(0, " alpha ")
 
 	// killing the server tears everything down
 	killCmd := exec.Command(bin, "kill-server")

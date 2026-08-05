@@ -74,6 +74,32 @@ func TestHistoryTrimKeepsAbsoluteIndices(t *testing.T) {
 	}
 }
 
+func TestParseMouseX10(t *testing.T) {
+	// wheel up at (10, 5) in Terminal.app's legacy encoding
+	me, n := parseMouse([]byte{0x1b, '[', 'M', 32 + 64, 32 + 10, 32 + 5})
+	if n != 6 || me.btn != mouseWheelUp || me.x != 10 || me.y != 5 || !me.press {
+		t.Fatalf("wheel: got %+v n=%d", me, n)
+	}
+	// left button press, then release
+	me, n = parseMouse([]byte{0x1b, '[', 'M', 32 + 0, 33, 33})
+	if n != 6 || me.btn != 0 || !me.press {
+		t.Fatalf("press: got %+v n=%d", me, n)
+	}
+	me, n = parseMouse([]byte{0x1b, '[', 'M', 32 + 3, 33, 33})
+	if n != 6 || me.press {
+		t.Fatalf("release: got %+v n=%d", me, n)
+	}
+	// incomplete prefix asks for more bytes
+	if _, n := parseMouse([]byte{0x1b, '[', 'M', 96}); n != 0 {
+		t.Fatalf("incomplete: n=%d", n)
+	}
+	// SGR encoding still parses
+	me, n = parseMouse([]byte("\x1b[<64;10;10M"))
+	if n == 0 || me.btn != mouseWheelUp || me.x != 10 {
+		t.Fatalf("sgr: got %+v n=%d", me, n)
+	}
+}
+
 func TestWrapLinePreservesColor(t *testing.T) {
 	chunks := wrapLine("\x1b[32maaaabbbb\x1b[0m", 4)
 	if len(chunks) != 2 {

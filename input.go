@@ -40,7 +40,9 @@ const (
 	keyCtrlC
 	keyCtrlD
 	keyCtrlN
+	keyCtrlO
 	keyCtrlP
+	keyCtrlS
 	keyCtrlU
 	keyCtrlX
 )
@@ -65,10 +67,16 @@ type event struct {
 	mouse mouseEv
 }
 
-// parseMouse parses an SGR mouse report starting at p[0]=='\x1b'. Returns the
-// event and bytes consumed, or consumed==0 if p is a valid-so-far prefix that
-// needs more bytes, or consumed==-1 if this is not a mouse sequence.
+// parseMouse parses a mouse report starting at p[0]=='\x1b'. It understands
+// both SGR encoding (ESC [ < b ; x ; y M/m, requested via ?1006) and the
+// legacy X10 encoding (ESC [ M b x y, what Terminal.app falls back to since it
+// ignores ?1006). Returns the event and bytes consumed, or consumed==0 if p is
+// a valid-so-far prefix that needs more bytes, or consumed==-1 if this is not
+// a mouse sequence.
 func parseMouse(p []byte) (mouseEv, int) {
+	if len(p) >= 3 && p[1] == '[' && p[2] == 'M' {
+		return parseMouseX10(p)
+	}
 	prefix := []byte{0x1b, '[', '<'}
 	for i, b := range prefix {
 		if i >= len(p) {
@@ -102,6 +110,27 @@ func parseMouse(p []byte) (mouseEv, int) {
 	return mouseEv{}, 0 // incomplete
 }
 
+// parseMouseX10 decodes ESC [ M b x y where b, x, y are single bytes offset
+// by 32. Wheel events set bit 64 in b; button 3 means release.
+func parseMouseX10(p []byte) (mouseEv, int) {
+	if len(p) < 6 {
+		return mouseEv{}, 0
+	}
+	v := int(p[3]) - 32
+	x := int(p[4]) - 32
+	y := int(p[5]) - 32
+	btn := v & 3
+	press := btn != 3
+	if !press {
+		btn = 0
+	}
+	if v&64 != 0 {
+		btn = mouseWheelUp + (v & 1)
+		press = true
+	}
+	return mouseEv{btn: btn, x: x, y: y, press: press, raw: p[:6]}, 6
+}
+
 // nextEventLive extracts the next event under live-mode rules.
 // incomplete=true means p starts with a possibly-unfinished sequence: stash it
 // and wait for more bytes.
@@ -119,6 +148,11 @@ func nextEventLive(p []byte) (ev event, n int, incomplete bool) {
 				return event{kind: evRaw, data: p[:i]}, i, false
 			}
 			return event{kind: evKey, key: keyCtrlBackslash}, 1, false
+		case 0x0f: // Ctrl-O: cycles tile focus in split view, else forwarded
+			if i > 0 {
+				return event{kind: evRaw, data: p[:i]}, i, false
+			}
+			return event{kind: evKey, key: keyCtrlO}, 1, false
 		case 0x1b:
 			me, mn := parseMouse(p[i:])
 			if mn > 0 {
@@ -189,8 +223,12 @@ func ctrlKey(b byte) key {
 		return keyCtrlD
 	case 0x0e:
 		return keyCtrlN
+	case 0x0f:
+		return keyCtrlO
 	case 0x10:
 		return keyCtrlP
+	case 0x13:
+		return keyCtrlS
 	case 0x15:
 		return keyCtrlU
 	case 0x18:
