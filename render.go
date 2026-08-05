@@ -239,11 +239,22 @@ func statusBar(srv *Server, view []*Session, focus int, cols int, extra string) 
 		ranges = append(ranges, clickRange{x0: start, x1: line.w, name: s.name})
 	}
 	right := extra
-	if right == "" {
-		right = "^Space sessions · ^\\ detach "
-	}
 	style := styleBarDim
-	if extra != "" {
+	if extra == "" {
+		// contextual shortcuts; drop from the left when the window is narrow
+		segs := []string{"wheel scroll", "^Space sessions", "^\\ detach"}
+		if len(view) > 1 {
+			segs = append([]string{"^O focus"}, segs...)
+		}
+		for len(segs) > 0 {
+			right = strings.Join(segs, " · ") + " "
+			if line.w+runeWidth(right) <= cols {
+				break
+			}
+			segs = segs[1:]
+			right = ""
+		}
+	} else {
 		style = styleScrollBar
 	}
 	gap := cols - line.w - runeWidth(right)
