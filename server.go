@@ -37,7 +37,9 @@ type client struct {
 	cwd string
 
 	mu           sync.Mutex
-	sess         *Session
+	sess         *Session   // focused session; invariant: sess == view[focus]
+	view         []*Session // sessions shown side by side, left to right
+	focus        int
 	cols, rows   int
 	mode         int
 	anchor       int // scroll mode: absolute history index of the top line
@@ -206,17 +208,96 @@ func (srv *Server) attach(mc *msgConn, req attachReq) {
 		return
 	}
 	c.sess = s
+	c.view = []*Session{s}
 	srv.mu.Lock()
 	srv.clients[c] = true
 	s.lastActive = time.Now()
 	srv.mu.Unlock()
 
-	s.resize(req.Cols, req.Rows-1)
+	c.resizeTiles()
 	c.sendTitle()
 	go c.renderLoop()
 	c.scheduleRender()
 	c.readLoop()
 }
+
+// resizeTiles sizes every visible session to its tile.
+func (c *client) resizeTiles() {
+	c.mu.Lock()
+	view := append([]*Session{}, c.view...)
+	cols, rows := c.cols, c.rows
+	c.mu.Unlock()
+	widths := tileWidths(cols, len(view))
+	for i, s := range view {
+		s.resize(widths[i], rows-1)
+	}
+}
+
+// setView installs a new tile set focused on index fi.
+// Caller must NOT hold c.mu.
+func (c *client) setView(view []*Session, fi int) {
+	c.mu.Lock()
+	c.view = view
+	c.focus = fi
+	c.sess = view[fi]
+	c.mode = modeLive
+	c.filter = nil
+	c.prev = nil
+	c.mu.Unlock()
+	c.srv.mu.Lock()
+	c.sess.lastActive = time.Now()
+	c.srv.mu.Unlock()
+	c.resizeTiles()
+	c.sendTitle()
+	c.scheduleRender()
+}
+
+func (c *client) focusTile(i int) {
+	c.mu.Lock()
+	if i < 0 || i >= len(c.view) || i == c.focus {
+		c.mu.Unlock()
+		return
+	}
+	c.focus = i
+	c.sess = c.view[i]
+	c.mu.Unlock()
+	c.srv.mu.Lock()
+	c.sess.lastActive = time.Now()
+	c.srv.mu.Unlock()
+	c.sendTitle()
+	c.scheduleRender()
+}
+
+// toggleSplit adds s as a tile, or removes it if already visible.
+func (c *client) toggleSplit(s *Session) {
+	c.mu.Lock()
+	view := append([]*Session{}, c.view...)
+	c.mu.Unlock()
+	idx := -1
+	for i, v := range view {
+		if v == s {
+			idx = i
+		}
+	}
+	if idx >= 0 {
+		if len(view) == 1 {
+			c.closeOverlay()
+			return
+		}
+		view = append(view[:idx], view[idx+1:]...)
+		c.setView(view, 0)
+		return
+	}
+	if len(view) >= maxTiles {
+		view[len(view)-1] = s
+		c.setView(view, len(view)-1)
+		return
+	}
+	view = append(view, s)
+	c.setView(view, len(view)-1)
+}
+
+const maxTiles = 3
 
 func (c *client) readLoop() {
 	for {
@@ -235,9 +316,8 @@ func (c *client) readLoop() {
 					c.mu.Lock()
 					c.cols, c.rows = cols, rows
 					c.prev = nil
-					s := c.sess
 					c.mu.Unlock()
-					s.resize(cols, rows-1)
+					c.resizeTiles()
 					c.scheduleRender()
 				}
 			}
@@ -373,13 +453,14 @@ func fuzzyMatch(s, pat string) bool {
 }
 
 // sessionUpdated is called from a session's readLoop after new output.
+// It nudges every client; render itself decides what (if anything) changed,
+// and the line diff suppresses no-op paints. Filtering by session here would
+// need c.mu inside srv.mu, inverting the lock order.
 func (srv *Server) sessionUpdated(s *Session) {
 	srv.mu.Lock()
 	defer srv.mu.Unlock()
 	for c := range srv.clients {
-		if c.sess == s && c.mode != modePalette {
-			c.scheduleRender()
-		}
+		c.scheduleRender()
 	}
 }
 
@@ -392,11 +473,9 @@ func (srv *Server) sessionClosed(s *Session) {
 	s.mu.Lock()
 	s.dead = true
 	s.mu.Unlock()
-	var affected []*client
+	var all []*client
 	for c := range srv.clients {
-		if c.sess == s {
-			affected = append(affected, c)
-		}
+		all = append(all, c)
 	}
 	var next *Session
 	for _, o := range srv.sessions {
@@ -408,12 +487,8 @@ func (srv *Server) sessionClosed(s *Session) {
 	srv.mu.Unlock()
 	log.Printf("session %q closed", s.name)
 
-	for _, c := range affected {
-		if empty {
-			c.exit("session closed · no sessions left")
-		} else {
-			c.switchTo(next)
-		}
+	for _, c := range all {
+		c.dropSession(s, next, empty)
 	}
 	if empty {
 		srv.mu.Lock()
@@ -428,19 +503,34 @@ func (srv *Server) sessionClosed(s *Session) {
 }
 
 func (c *client) switchTo(s *Session) {
+	c.setView([]*Session{s}, 0)
+}
+
+// dropSession removes a dead session from this client's view, falling back to
+// the most recent surviving session (or exiting) when nothing is left visible.
+func (c *client) dropSession(s, next *Session, empty bool) {
 	c.mu.Lock()
-	c.sess = s
-	c.mode = modeLive
-	c.prev = nil
-	c.filter = nil
-	cols, rows := c.cols, c.rows
+	idx := -1
+	for i, v := range c.view {
+		if v == s {
+			idx = i
+		}
+	}
+	if idx < 0 {
+		c.mu.Unlock()
+		return
+	}
+	view := append(append([]*Session{}, c.view[:idx]...), c.view[idx+1:]...)
 	c.mu.Unlock()
-	c.srv.mu.Lock()
-	s.lastActive = time.Now()
-	c.srv.mu.Unlock()
-	s.resize(cols, rows-1)
-	c.sendTitle()
-	c.scheduleRender()
+	if len(view) > 0 {
+		c.setView(view, 0)
+		return
+	}
+	if empty || next == nil {
+		c.exit("session closed · no sessions left")
+		return
+	}
+	c.switchTo(next)
 }
 
 func (c *client) createAndSwitch(name string) {
@@ -520,30 +610,61 @@ func (c *client) liveEvent(ev event) {
 			c.openPalette()
 		case keyCtrlBackslash:
 			c.exit("detached · sessions still running · reattach with: vmux")
+		case keyCtrlO:
+			c.mu.Lock()
+			n := len(c.view)
+			nextFocus := 0
+			if n > 0 {
+				nextFocus = (c.focus + 1) % n
+			}
+			c.mu.Unlock()
+			if n > 1 {
+				c.focusTile(nextFocus)
+			} else {
+				s.writeInput([]byte{0x0f}) // not split: Ctrl-O belongs to the app
+			}
 		}
 	case evMouse:
-		c.liveMouse(ev.mouse, s)
+		c.liveMouse(ev.mouse)
 	}
 }
 
-func (c *client) liveMouse(m mouseEv, s *Session) {
+func (c *client) liveMouse(m mouseEv) {
 	c.mu.Lock()
-	rows := c.rows
+	rows, cols := c.rows, c.cols
 	ranges := c.statusRanges
+	view := append([]*Session{}, c.view...)
+	focus := c.focus
 	c.mu.Unlock()
 
-	// clicks on the status bar switch sessions
+	// clicks on the status bar focus or switch sessions
 	if m.y == rows && m.press && m.btn == 0 {
 		for _, r := range ranges {
 			if m.x >= r.x0 && m.x <= r.x1 {
-				if t := c.srv.sessionByName(r.name); t != nil {
-					c.switchTo(t)
+				t := c.srv.sessionByName(r.name)
+				if t == nil {
+					return
 				}
+				for i, v := range view {
+					if v == t {
+						c.focusTile(i)
+						return
+					}
+				}
+				c.switchTo(t)
 				return
 			}
 		}
 		return
 	}
+
+	// which tile is under the pointer?
+	widths := tileWidths(cols, len(view))
+	ti, tx := tileAt(widths, m.x)
+	if ti < 0 {
+		ti, tx = focus, m.x
+	}
+	s := view[ti]
 
 	s.mu.Lock()
 	vmode := s.vt.Mode()
@@ -552,9 +673,12 @@ func (c *client) liveMouse(m mouseEv, s *Session) {
 	appCursor := vmode&vt10x.ModeAppCursor != 0
 	altScreen := vmode&vt10x.ModeAltScreen != 0
 
+	if m.press && m.btn == 0 && ti != focus {
+		c.focusTile(ti)
+	}
 	if appMouse {
 		if m.y < rows { // not our status row
-			s.writeInput(m.raw)
+			s.writeInput(rebuildMouse(m, tx))
 		}
 		return
 	}
@@ -563,6 +687,7 @@ func (c *client) liveMouse(m mouseEv, s *Session) {
 		if altScreen {
 			s.writeInput(wheelArrows(true, appCursor))
 		} else if m.press {
+			c.focusTile(ti)
 			c.enterScroll()
 		}
 	case mouseWheelDown:
@@ -570,6 +695,34 @@ func (c *client) liveMouse(m mouseEv, s *Session) {
 			s.writeInput(wheelArrows(false, appCursor))
 		}
 	}
+}
+
+// tileAt maps a 1-based screen column to (tile index, column within tile).
+// Returns -1 for the separator columns.
+func tileAt(widths []int, x int) (int, int) {
+	off := 0
+	for i, w := range widths {
+		if x >= off+1 && x <= off+w {
+			return i, x - off
+		}
+		off += w + 1
+	}
+	return -1, x
+}
+
+// rebuildMouse re-encodes a mouse event with a tile-local x coordinate,
+// keeping the encoding the terminal used.
+func rebuildMouse(m mouseEv, tx int) []byte {
+	if len(m.raw) == 6 && m.raw[2] == 'M' { // X10
+		out := append([]byte{}, m.raw...)
+		out[4] = byte(32 + tx)
+		return out
+	}
+	final := byte('m')
+	if m.press {
+		final = 'M'
+	}
+	return []byte(fmt.Sprintf("\x1b[<%d;%d;%d%c", m.btn, tx, m.y, final))
 }
 
 func wheelArrows(up, appCursor bool) []byte {
@@ -677,6 +830,14 @@ func (c *client) paletteEvent(ev event) {
 			c.mu.Unlock()
 		case keyCtrlD:
 			c.exit("detached · sessions still running · reattach with: vmux")
+		case keyCtrlS:
+			c.mu.Lock()
+			list := c.filteredSessions()
+			sel := c.sel
+			c.mu.Unlock()
+			if sel < len(list) {
+				c.toggleSplit(list[sel])
+			}
 		case keyCtrlX:
 			c.mu.Lock()
 			list := c.filteredSessions()
@@ -725,11 +886,11 @@ func (c *client) enterScroll() {
 	rows := c.rows
 	c.mu.Unlock()
 	s.mu.Lock()
-	total := s.hist.Total()
+	total := s.hist.DocLen()
 	first := s.hist.First()
 	s.mu.Unlock()
-	if total == first {
-		return // no history yet
+	if total-first <= 1 {
+		return // only the in-progress line, nothing to scroll into
 	}
 	anchor := total - (rows - 1) - 3
 	if anchor < first {
@@ -749,7 +910,7 @@ func (c *client) scrollBy(delta int) {
 	rows := c.rows
 	c.mu.Unlock()
 	s.mu.Lock()
-	total := s.hist.Total()
+	total := s.hist.DocLen()
 	first := s.hist.First()
 	s.mu.Unlock()
 	bottom := total - (rows - 1)

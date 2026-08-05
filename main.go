@@ -20,9 +20,11 @@ usage:
 inside vmux:
   Ctrl-Space          session palette: type to filter or name a new session,
                       Enter to switch/create, 1-9 to jump, Ctrl-x kill, Esc close
+  Ctrl-S (palette)    split: show the selected session next to the current one
+  Ctrl-O              cycle focus between split tiles
   Ctrl-\              detach (sessions keep running)
   mouse wheel         scroll history; q or Esc returns to live
-  status bar clicks   click a session name to switch
+  status bar clicks   click a session name to focus or switch
 `
 
 func vmuxDir() string {

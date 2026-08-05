@@ -191,8 +191,33 @@ type clickRange struct {
 	name   string
 }
 
-// statusBar builds the bottom row. Caller must hold srv.mu.
-func statusBar(srv *Server, cur *Session, cols int, extra string) (string, []clickRange) {
+// tileWidths splits cols across n side-by-side tiles with 1-column separators.
+func tileWidths(cols, n int) []int {
+	if n < 1 {
+		n = 1
+	}
+	avail := cols - (n - 1)
+	base := avail / n
+	rem := avail % n
+	w := make([]int, n)
+	for i := range w {
+		w[i] = base
+		if i < rem {
+			w[i]++
+		}
+	}
+	return w
+}
+
+// statusBar builds the bottom row. The focused session gets its identity color
+// as a bright segment; other visible tiles show their name in their identity
+// color; background sessions are dim. Caller must hold srv.mu.
+func statusBar(srv *Server, view []*Session, focus int, cols int, extra string) (string, []clickRange) {
+	cur := view[focus]
+	visible := map[*Session]bool{}
+	for _, v := range view {
+		visible[v] = true
+	}
 	var line sb
 	var ranges []clickRange
 	line.add(styleBarBG, " ")
@@ -203,10 +228,12 @@ func statusBar(srv *Server, cur *Session, cols int, extra string) (string, []cli
 			line.add(styleBarDim, "…")
 			break
 		}
-		if s == cur {
-			bg := identityColor(s.name)
-			line.add(fmt.Sprintf("0;1;38;5;16;48;5;%d", bg), seg)
-		} else {
+		switch {
+		case s == cur:
+			line.add(fmt.Sprintf("0;1;38;5;16;48;5;%d", identityColor(s.name)), seg)
+		case visible[s]:
+			line.add(fmt.Sprintf("0;48;5;236;38;5;%d", identityColor(s.name)), seg)
+		default:
 			line.add(styleBarDim, seg)
 		}
 		ranges = append(ranges, clickRange{x0: start, x1: line.w, name: s.name})
@@ -225,31 +252,59 @@ func statusBar(srv *Server, cur *Session, cols int, extra string) (string, []cli
 	return line.String(), ranges
 }
 
-// renderLive paints the active session's screen plus the status bar.
+// renderLive paints the visible tiles side by side plus the status bar.
 // Caller must hold c.mu.
 func (c *client) renderLive() *frame {
-	s := c.sess
-	f := &frame{lines: make([]string, 0, c.rows)}
+	view := c.view
+	widths := tileWidths(c.cols, len(view))
 	gridRows := c.rows - 1
+	f := &frame{lines: make([]string, 0, c.rows)}
 
-	s.mu.Lock()
-	vcols, vrows := s.vt.Size()
-	s.vt.Lock()
-	for y := 0; y < gridRows; y++ {
-		if y < vrows {
-			f.lines = append(f.lines, gridLine(s.vt, y, min(vcols, c.cols)))
-		} else {
-			f.lines = append(f.lines, "")
+	tiles := make([][]string, len(view))
+	xoff := 0
+	for i, s := range view {
+		w := widths[i]
+		lines := make([]string, gridRows)
+		s.mu.Lock()
+		vcols, vrows := s.vt.Size()
+		s.vt.Lock()
+		cw := min(vcols, w)
+		for y := 0; y < gridRows; y++ {
+			var ln string
+			if y < vrows {
+				ln = gridLine(s.vt, y, cw)
+			}
+			if cw < w {
+				ln += "\x1b[0m" + strings.Repeat(" ", w-cw)
+			}
+			lines[y] = ln
 		}
+		if i == c.focus {
+			cur := s.vt.Cursor()
+			f.curX, f.curY = xoff+cur.X, cur.Y
+			f.curVis = s.vt.CursorVisible() && cur.Y < gridRows && cur.X < w
+		}
+		s.vt.Unlock()
+		s.mu.Unlock()
+		tiles[i] = lines
+		xoff += w + 1
 	}
-	cur := s.vt.Cursor()
-	f.curX, f.curY = cur.X, cur.Y
-	f.curVis = s.vt.CursorVisible() && cur.Y < gridRows
-	s.vt.Unlock()
-	s.mu.Unlock()
+
+	const sep = "\x1b[0;38;5;238m│\x1b[0m"
+	for y := 0; y < gridRows; y++ {
+		if len(view) == 1 {
+			f.lines = append(f.lines, tiles[0][y])
+			continue
+		}
+		parts := make([]string, len(view))
+		for i := range view {
+			parts[i] = tiles[i][y]
+		}
+		f.lines = append(f.lines, strings.Join(parts, sep))
+	}
 
 	c.srv.mu.Lock()
-	bar, ranges := statusBar(c.srv, s, c.cols, "")
+	bar, ranges := statusBar(c.srv, view, c.focus, c.cols, "")
 	c.srv.mu.Unlock()
 	c.statusRanges = ranges
 	f.lines = append(f.lines, bar)
@@ -264,17 +319,14 @@ func (c *client) renderScroll() *frame {
 	viewRows := c.rows - 1
 
 	s.mu.Lock()
-	total := s.hist.Total()
+	total := s.hist.DocLen()
 	first := s.hist.First()
 	if c.anchor < first {
 		c.anchor = first
 	}
-	pos := 0
-	if total > 0 {
-		pos = c.anchor - first + 1
-	}
+	pos := c.anchor - first + 1
 	for abs := c.anchor; len(f.lines) < viewRows && abs < total; abs++ {
-		hl := s.hist.LineAt(abs)
+		hl := s.hist.DocLine(abs)
 		if hl.w <= c.cols {
 			f.lines = append(f.lines, hl.s)
 			continue
@@ -293,7 +345,7 @@ func (c *client) renderScroll() *frame {
 
 	extra := fmt.Sprintf(" SCROLL %d/%d · wheel/PgUp/PgDn · q quit ", pos, total-first)
 	c.srv.mu.Lock()
-	bar, ranges := statusBar(c.srv, s, c.cols, extra)
+	bar, ranges := statusBar(c.srv, c.view, c.focus, c.cols, extra)
 	c.srv.mu.Unlock()
 	c.statusRanges = ranges
 	f.lines = append(f.lines, bar)
@@ -346,6 +398,12 @@ func (c *client) renderPalette() *frame {
 		var notes []string
 		if s == c.sess {
 			notes = append(notes, "current")
+		} else {
+			for _, v := range c.view {
+				if v == s {
+					notes = append(notes, "in split")
+				}
+			}
 		}
 		if n := c.srv.attachedCount(s); n > 0 {
 			notes = append(notes, fmt.Sprintf("%d attached", n))
@@ -369,7 +427,7 @@ func (c *client) renderPalette() *frame {
 
 	var hints sb
 	hints.add(styleBarBG, " ")
-	hints.add(styleBarDim, "↵ switch/create · type to filter · 1-9 jump · ^X kill · ^D detach · esc close")
+	hints.add(styleBarDim, "↵ switch/create · ^S split · 1-9 jump · ^X kill · ^D detach · esc close")
 	hints.pad(styleBarBG, c.cols-hints.w)
 	f.lines[c.rows-1] = hints.String()
 	c.statusRanges = nil

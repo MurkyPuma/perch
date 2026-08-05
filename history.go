@@ -56,6 +56,25 @@ func (h *History) Total() int              { return h.trimmed + len(h.lines) }
 func (h *History) First() int              { return h.trimmed }
 func (h *History) LineAt(abs int) histLine { return h.lines[abs-h.trimmed] }
 
+// DocLen/DocLine expose the history plus the in-progress line as one
+// scrollable document, so the bottom of the scroll view matches the live
+// prompt line instead of cutting it off.
+func (h *History) DocLen() int { return h.trimmed + len(h.lines) + 1 }
+
+func (h *History) DocLine(abs int) histLine {
+	if i := abs - h.trimmed; i < len(h.lines) {
+		return h.lines[i]
+	}
+	line := string(h.cur)
+	if line != "" && h.startSGR != "" {
+		line = h.startSGR + line
+	}
+	if line != "" {
+		line += "\x1b[0m"
+	}
+	return histLine{s: line, w: h.curW}
+}
+
 func (h *History) pushLine() {
 	styled := h.startSGR != ""
 	for _, b := range h.cur {

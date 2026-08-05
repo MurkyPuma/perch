@@ -165,3 +165,59 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("kill-server: %v\n%s", err, out)
 	}
 }
+
+func TestSplitView(t *testing.T) {
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "vmux")
+	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
+		t.Fatalf("build: %v\n%s", err, out)
+	}
+	env := []string{"VMUX_DIR=" + filepath.Join(tmp, "state"), "SHELL=/bin/sh",
+		"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME"), "TERM=xterm-256color"}
+	defer func() {
+		kill := exec.Command(bin, "kill-server")
+		kill.Env = env
+		kill.Run()
+	}()
+
+	tt := startClient(t, bin, env, "left")
+
+	// create a second session via the palette
+	m := tt.mark()
+	tt.send("\x00")
+	tt.waitFor(m, "vmux sessions")
+	m = tt.mark()
+	tt.send("right\r")
+	tt.waitFor(m, " right ")
+	m = tt.mark()
+	tt.send("echo in-right\r")
+	tt.waitFor(m, "in-right")
+
+	// open palette, Ctrl-S the selected (previous) session into a split
+	m = tt.mark()
+	tt.send("\x00")
+	tt.waitFor(m, "vmux sessions")
+	m = tt.mark()
+	tt.send("\x13")    // Ctrl-S
+	tt.waitFor(m, "│") // separator means two tiles are visible
+
+	// focused tile is the newly added one (left); type into it
+	m = tt.mark()
+	tt.send("echo in-left\r")
+	tt.waitFor(m, "in-left")
+
+	// Ctrl-O cycles focus back to right; typing lands there
+	tt.send("\x0f")
+	m = tt.mark()
+	tt.send("echo right-again\r")
+	tt.waitFor(m, "right-again")
+
+	// collapse back to a single session via palette + Enter
+	m = tt.mark()
+	tt.send("\x00")
+	tt.waitFor(m, "vmux sessions")
+	tt.send("left\r")
+	m = tt.mark()
+	tt.send("echo solo\r")
+	tt.waitFor(m, "solo")
+}
