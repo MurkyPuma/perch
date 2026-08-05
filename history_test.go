@@ -25,8 +25,59 @@ func TestHistoryColorCarriesAcrossLines(t *testing.T) {
 		t.Fatalf("line 0 lost color: %q", h.LineAt(0).s)
 	}
 	// second line began while red was active, so it must reopen the color
-	if !strings.HasPrefix(h.LineAt(1).s, "\x1b[31m") {
+	if !strings.HasPrefix(h.LineAt(1).s, "\x1b[0;31m") {
 		t.Fatalf("line 1 does not reopen color: %q", h.LineAt(1).s)
+	}
+}
+
+// Ink-style live area: apps like Claude Code repaint their last lines by
+// erasing and moving the cursor up. History must keep only the final state.
+func TestHistoryInkRepaint(t *testing.T) {
+	h := newHistory(100)
+	feedString(h, "static\r\nliveA-old\r\nliveB-old")
+	// erase current line, up one, erase, then rewrite both live lines
+	feedString(h, "\x1b[2K\x1b[1A\x1b[2K\rliveA-new\r\nliveB-new")
+	if h.Total() != 2 {
+		t.Fatalf("want 2 completed lines, got %d", h.Total())
+	}
+	if h.LineAt(0).s != "static" || h.LineAt(1).s != "liveA-new" {
+		t.Fatalf("got %q, %q", h.LineAt(0).s, h.LineAt(1).s)
+	}
+	if got := h.DocLine(2).s; got != "liveB-new" {
+		t.Fatalf("in-progress line: %q", got)
+	}
+}
+
+// Truecolor SGR state crossing many lines must reopen as one well-formed
+// sequence, never as sliced fragments like ";215;119;87m" leaking into text.
+func TestHistoryTruecolorNoFragments(t *testing.T) {
+	h := newHistory(1000)
+	for i := 0; i < 50; i++ {
+		feedString(h, "\x1b[38;2;215;119;87m\x1b[48;2;30;30;30m\x1b[1mx\r\n")
+	}
+	feedString(h, "tail\r\n")
+	last := h.LineAt(h.Total() - 1)
+	if !strings.HasPrefix(last.s, "\x1b[0;1;38;2;215;119;87;48;2;30;30;30m") {
+		t.Fatalf("bad canonical prefix: %q", last.s)
+	}
+	for i := 0; i < h.Total(); i++ {
+		s := h.LineAt(i).s
+		if len(s) > 0 && (s[0] == ';' || (s[0] >= '0' && s[0] <= '9')) {
+			t.Fatalf("line %d starts with SGR fragment garbage: %q", i, s)
+		}
+	}
+}
+
+func TestHistoryCursorForwardIsSpacing(t *testing.T) {
+	h := newHistory(10)
+	feedString(h, "a\x1b[3Cb\r\n")
+	if got := h.LineAt(0); got.s != "a   b" || got.w != 5 {
+		t.Fatalf("got %q w=%d", got.s, got.w)
+	}
+	// column-absolute padding
+	feedString(h, "x\x1b[5Gy\r\n")
+	if got := h.LineAt(1); got.s != "x   y" || got.w != 5 {
+		t.Fatalf("got %q w=%d", got.s, got.w)
 	}
 }
 
