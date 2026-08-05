@@ -13,7 +13,9 @@ import (
 const usage = `perch: a friendlier terminal multiplexer
 
 usage:
-  perch [session]      attach to a session (creates it if missing; default "main")
+  perch                attach to a session named after the current directory
+  perch api            attach to the session "api" (creates it if missing)
+  perch api web        open "api" and "web" side by side (up to 3)
   perch ls             list sessions
   perch kill-server    stop the server and all sessions
 
@@ -61,15 +63,11 @@ func main() {
 			return
 		}
 	}
-	session := ""
-	if len(args) > 0 {
-		session = args[0]
-	}
 	if os.Getenv("PERCH") != "" {
 		fmt.Fprintln(os.Stderr, "perch: already inside a perch session (unset PERCH to force)")
 		os.Exit(1)
 	}
-	if err := runClient(session); err != nil {
+	if err := runClient(args); err != nil {
 		fmt.Fprintln(os.Stderr, "perch:", err)
 		os.Exit(1)
 	}

@@ -220,4 +220,13 @@ func TestSplitView(t *testing.T) {
 	m = tt.mark()
 	tt.send("echo solo\r")
 	tt.waitFor(m, "solo")
+
+	// CLI: `perch a b` attaches straight into a split
+	tt2 := startClient(t, bin, env, "cli-a", "cli-b")
+	tt2.waitFor(0, "│")
+	tt2.waitFor(0, " cli-a ")
+	tt2.waitFor(0, " cli-b ")
+	m = tt2.mark()
+	tt2.send("echo in-cli-a\r") // focus starts on the first name
+	tt2.waitFor(m, "in-cli-a")
 }

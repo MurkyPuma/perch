@@ -20,10 +20,11 @@ const (
 )
 
 type attachReq struct {
-	Session string `json:"session"`
-	Cols    int    `json:"cols"`
-	Rows    int    `json:"rows"`
-	Cwd     string `json:"cwd"`
+	// Sessions to show side by side (up to maxTiles); first is focused.
+	Sessions []string `json:"sessions"`
+	Cols     int      `json:"cols"`
+	Rows     int      `json:"rows"`
+	Cwd      string   `json:"cwd"`
 }
 
 const maxPayload = 16 << 20

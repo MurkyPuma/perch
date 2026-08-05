@@ -34,10 +34,18 @@ what you meant anyway.
 
 ![scrollback](assets/scroll.png)
 
-**Splits are just sessions.** `Ctrl-S` in the palette shows the selected
-session next to the current one, up to three columns. There is no separate
-pane primitive to learn: a split is two sessions on screen at once. `Ctrl-O`
-or a click moves focus, and the focused tile owns your keyboard and cursor.
+**Splits are just sessions.** Two ways to get sessions side by side:
+
+```sh
+perch api web        # open both at once, split
+```
+
+or from inside: `Ctrl-Space` to open the palette, pick a session, and press
+`Ctrl-S` instead of Enter. Enter means "take me there"; `Ctrl-S` means "show
+it next to what I have" (press it again on a visible session to remove it).
+Up to three columns. There is no separate pane primitive to learn: a split is
+just two sessions on screen at once. `Ctrl-O` or a click moves focus, and the
+focused tile owns your keyboard and cursor.
 
 ![split view](assets/split.png)
 
@@ -79,6 +87,7 @@ Built and tested on macOS. It is a single static binary, so you can also
 ```sh
 perch                # attach or create a session named after the current directory
 perch api            # attach or create the session "api"
+perch api web        # open "api" and "web" side by side
 perch ls             # list sessions
 perch kill-server    # stop everything
 ```

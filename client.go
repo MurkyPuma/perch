@@ -38,10 +38,10 @@ const (
 	leaveSeq = "\x1b[?1000l\x1b[?1006l\x1b[0m\x1b[?1049l\x1b[?25h"
 )
 
-func runClient(session string) error {
+func runClient(sessions []string) error {
 	cwd, _ := os.Getwd()
-	if session == "" {
-		session = sessionNameFor(cwd)
+	if len(sessions) == 0 {
+		sessions = []string{sessionNameFor(cwd)}
 	}
 
 	fd := int(os.Stdin.Fd())
@@ -62,7 +62,7 @@ func runClient(session string) error {
 	}
 	defer mc.Close()
 
-	req, _ := json.Marshal(attachReq{Session: session, Cols: cols, Rows: rows, Cwd: cwd})
+	req, _ := json.Marshal(attachReq{Sessions: sessions, Cols: cols, Rows: rows, Cwd: cwd})
 	if err := mc.writeMsg(msgAttach, req); err != nil {
 		return err
 	}

@@ -434,6 +434,19 @@ func (c *client) renderPalette() *frame {
 		var l sb
 		l.add("0;38;5;114", fmt.Sprintf("  ↵ create session %q", sanitizeName(string(c.filter))))
 		f.lines[5] = l.String()
+		row = 6
+	}
+
+	// visible legend: the split action lives here and people must find it
+	if row+2 < c.rows-2 {
+		var l sb
+		l.add("0;38;5;250", "  ↵")
+		l.add("0;38;5;244", " open here      ")
+		l.add("0;38;5;250", "^S")
+		l.add("0;38;5;244", " open side-by-side      ")
+		l.add("0;38;5;250", "^X")
+		l.add("0;38;5;244", " kill")
+		f.lines[row+2] = l.String()
 	}
 
 	var hints sb

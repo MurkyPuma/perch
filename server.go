@@ -186,11 +186,25 @@ func (srv *Server) findOrCreate(name, cwd string, cols, rows int) (*Session, err
 }
 
 func (srv *Server) attach(mc *msgConn, req attachReq) {
-	name := sanitizeName(req.Session)
 	if req.Cols < 20 || req.Rows < 5 || req.Cols > 1000 || req.Rows > 1000 {
 		mc.writeMsg(msgExit, []byte("bad terminal size"))
 		mc.Close()
 		return
+	}
+	var names []string
+	seen := map[string]bool{}
+	for _, n := range req.Sessions {
+		n = sanitizeName(n)
+		if !seen[n] {
+			seen[n] = true
+			names = append(names, n)
+		}
+	}
+	if len(names) == 0 {
+		names = []string{"main"}
+	}
+	if len(names) > maxTiles {
+		names = names[:maxTiles]
 	}
 	c := &client{
 		mc:       mc,
@@ -201,17 +215,21 @@ func (srv *Server) attach(mc *msgConn, req attachReq) {
 		renderCh: make(chan struct{}, 1),
 		quit:     make(chan struct{}),
 	}
-	s, err := srv.findOrCreate(name, req.Cwd, req.Cols, req.Rows-1)
-	if err != nil {
-		mc.writeMsg(msgExit, []byte("cannot start session: "+err.Error()))
-		mc.Close()
-		return
+	var view []*Session
+	for _, name := range names {
+		s, err := srv.findOrCreate(name, req.Cwd, req.Cols, req.Rows-1)
+		if err != nil {
+			mc.writeMsg(msgExit, []byte("cannot start session: "+err.Error()))
+			mc.Close()
+			return
+		}
+		view = append(view, s)
 	}
-	c.sess = s
-	c.view = []*Session{s}
+	c.sess = view[0]
+	c.view = view
 	srv.mu.Lock()
 	srv.clients[c] = true
-	s.lastActive = time.Now()
+	c.sess.lastActive = time.Now()
 	srv.mu.Unlock()
 
 	c.resizeTiles()
