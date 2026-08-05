@@ -371,7 +371,7 @@ func (c *client) renderPalette() *frame {
 	}
 
 	var title sb
-	title.add("0;1;38;5;252", "  vmux sessions")
+	title.add("0;1;38;5;252", "  perch sessions")
 	f.lines[1] = title.String()
 
 	var input sb

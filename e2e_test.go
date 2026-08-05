@@ -12,7 +12,7 @@ import (
 	"github.com/creack/pty"
 )
 
-// term drives one vmux client under a real PTY and accumulates its output.
+// term drives one perch client under a real PTY and accumulates its output.
 type testTerm struct {
 	t    *testing.T
 	ptmx *os.File
@@ -89,12 +89,12 @@ func startClient(t *testing.T, bin string, env []string, args ...string) *testTe
 
 func TestEndToEnd(t *testing.T) {
 	tmp := t.TempDir()
-	bin := filepath.Join(tmp, "vmux")
+	bin := filepath.Join(tmp, "perch")
 	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
 		t.Fatalf("build: %v\n%s", err, out)
 	}
 
-	env := []string{"VMUX_DIR=" + filepath.Join(tmp, "state"), "SHELL=/bin/sh",
+	env := []string{"PERCH_DIR=" + filepath.Join(tmp, "state"), "SHELL=/bin/sh",
 		"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME"), "TERM=xterm-256color"}
 	defer exec.Command(bin, "kill-server").Run()
 	defer func() {
@@ -113,7 +113,7 @@ func TestEndToEnd(t *testing.T) {
 	// palette opens, typing an unknown name creates a session
 	m = tt.mark()
 	tt.send("\x00")
-	tt.waitFor(m, "vmux sessions")
+	tt.waitFor(m, "perch sessions")
 	m = tt.mark()
 	tt.send("work\r")
 	tt.waitFor(m, " work ") // status bar segment for the new current session
@@ -137,7 +137,7 @@ func TestEndToEnd(t *testing.T) {
 	tt.send("q")
 	tt.waitFor(m, " alpha ") // live view again
 
-	// vmux ls sees both sessions
+	// perch ls sees both sessions
 	lsCmd := exec.Command(bin, "ls")
 	lsCmd.Env = env
 	out, err := lsCmd.CombinedOutput()
@@ -168,11 +168,11 @@ func TestEndToEnd(t *testing.T) {
 
 func TestSplitView(t *testing.T) {
 	tmp := t.TempDir()
-	bin := filepath.Join(tmp, "vmux")
+	bin := filepath.Join(tmp, "perch")
 	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
 		t.Fatalf("build: %v\n%s", err, out)
 	}
-	env := []string{"VMUX_DIR=" + filepath.Join(tmp, "state"), "SHELL=/bin/sh",
+	env := []string{"PERCH_DIR=" + filepath.Join(tmp, "state"), "SHELL=/bin/sh",
 		"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME"), "TERM=xterm-256color"}
 	defer func() {
 		kill := exec.Command(bin, "kill-server")
@@ -185,7 +185,7 @@ func TestSplitView(t *testing.T) {
 	// create a second session via the palette
 	m := tt.mark()
 	tt.send("\x00")
-	tt.waitFor(m, "vmux sessions")
+	tt.waitFor(m, "perch sessions")
 	m = tt.mark()
 	tt.send("right\r")
 	tt.waitFor(m, " right ")
@@ -196,7 +196,7 @@ func TestSplitView(t *testing.T) {
 	// open palette, Ctrl-S the selected (previous) session into a split
 	m = tt.mark()
 	tt.send("\x00")
-	tt.waitFor(m, "vmux sessions")
+	tt.waitFor(m, "perch sessions")
 	m = tt.mark()
 	tt.send("\x13")    // Ctrl-S
 	tt.waitFor(m, "│") // separator means two tiles are visible
@@ -215,7 +215,7 @@ func TestSplitView(t *testing.T) {
 	// collapse back to a single session via palette + Enter
 	m = tt.mark()
 	tt.send("\x00")
-	tt.waitFor(m, "vmux sessions")
+	tt.waitFor(m, "perch sessions")
 	tt.send("left\r")
 	m = tt.mark()
 	tt.send("echo solo\r")

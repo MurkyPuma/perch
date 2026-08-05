@@ -36,7 +36,7 @@ func newSession(name, cwd string, cols, rows int) (*Session, error) {
 		shell = "/bin/zsh"
 	}
 	cmd := exec.Command(shell, "-l")
-	cmd.Env = append(os.Environ(), "TERM=xterm-256color", "VMUX="+name)
+	cmd.Env = append(os.Environ(), "TERM=xterm-256color", "PERCH="+name)
 	if cwd != "" {
 		if st, err := os.Stat(cwd); err == nil && st.IsDir() {
 			cmd.Dir = cwd

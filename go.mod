@@ -1,4 +1,4 @@
-module github.com/MurkyPuma/vmux
+module github.com/MurkyPuma/perch
 
 go 1.26.5
 

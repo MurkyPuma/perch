@@ -1,9 +1,9 @@
-# vmux
+# perch
 
 A terminal multiplexer that gets out of your way. Sessions you can actually
 see, switch with one key, and scroll with your mouse.
 
-![vmux live view](assets/live.png)
+![perch live view](assets/live.png)
 
 ## Why
 
@@ -14,7 +14,7 @@ tmux is great infrastructure with a rough cockpit. Three things kept biting:
 - **You can never tell where you are.** Sessions named `0` and `1` in a dim
   status bar.
 
-vmux keeps the part of tmux that matters (persistent sessions on a background
+perch keeps the part of tmux that matters (persistent sessions on a background
 server, detach and reattach at will) and rebuilds the cockpit around those
 three complaints.
 
@@ -34,12 +34,19 @@ what you meant anyway.
 
 ![scrollback](assets/scroll.png)
 
+**Splits are just sessions.** `Ctrl-S` in the palette shows the selected
+session next to the current one, up to three columns. There is no separate
+pane primitive to learn: a split is two sessions on screen at once. `Ctrl-O`
+or a click moves focus, and the focused tile owns your keyboard and cursor.
+
+![split view](assets/split.png)
+
 **You always know where you are.** Every session gets a stable identity color
 derived from its name. The current session is highlighted in the status bar,
 the other sessions sit next to it (click one to switch), and your terminal tab
 title follows along.
 
-**One session per project, automatically.** Bare `vmux` inside
+**One session per project, automatically.** Bare `perch` inside
 `~/dev/my-app` attaches or creates a session named `my-app`, starting in that
 directory. Your sessions end up mapping one-to-one to your projects without
 you naming anything.
@@ -47,11 +54,11 @@ you naming anything.
 ## Install
 
 ```sh
-go install github.com/MurkyPuma/vmux@latest
+go install github.com/MurkyPuma/perch@latest
 ```
 
 `go install` puts the binary in `$(go env GOPATH)/bin` (usually `~/go/bin`),
-which is not on your PATH by default. If `vmux` is not found afterwards:
+which is not on your PATH by default. If `perch` is not found afterwards:
 
 ```sh
 echo 'export PATH="$HOME/go/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
@@ -60,8 +67,8 @@ echo 'export PATH="$HOME/go/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
 Or from a clone:
 
 ```sh
-git clone https://github.com/MurkyPuma/vmux
-cd vmux && go build && cp vmux /usr/local/bin/
+git clone https://github.com/MurkyPuma/perch
+cd perch && go build && cp perch /usr/local/bin/
 ```
 
 Built and tested on macOS. It is a single static binary, so you can also
@@ -70,10 +77,10 @@ Built and tested on macOS. It is a single static binary, so you can also
 ## Use
 
 ```sh
-vmux                # attach or create a session named after the current directory
-vmux api            # attach or create the session "api"
-vmux ls             # list sessions
-vmux kill-server    # stop everything
+perch                # attach or create a session named after the current directory
+perch api            # attach or create the session "api"
+perch ls             # list sessions
+perch kill-server    # stop everything
 ```
 
 | Key | Action |
@@ -83,6 +90,8 @@ vmux kill-server    # stop everything
 | `Ctrl-Space` `Ctrl-Space` | jump to the previous session (alt-tab) |
 | `1` to `9` | jump to the nth session in the palette |
 | `Ctrl-X` | kill the selected session (in the palette) |
+| `Ctrl-S` | in the palette: split with the selected session (again to unsplit) |
+| `Ctrl-O` | cycle focus between split tiles |
 | `Ctrl-\` | detach, sessions keep running |
 | mouse wheel | scroll history; `q` or `Esc` to return |
 | `PgUp` / `PgDn`, `g` / `G` | move around in scrollback |
@@ -108,7 +117,7 @@ that ask for it.
 
 ## Not there yet
 
-- Panes and splits (deliberately out for now; sessions are the core primitive)
+- Horizontal splits and nested layouts (side-by-side columns only for now)
 - Mouse text selection straight to the system clipboard
 - Search inside scrollback
 - Activity indicators for background sessions
@@ -121,7 +130,7 @@ go test ./...        # unit tests + an end-to-end test driving a real PTY
 go run ./hack/snap out/   # regenerate the README screenshots
 ```
 
-The screenshots above are real: `hack/snap` scripts an actual vmux server and
+The screenshots above are real: `hack/snap` scripts an actual perch server and
 client under a PTY, mirrors the client into a virtual terminal, and renders
 the result to PNG with headless Chrome.
 

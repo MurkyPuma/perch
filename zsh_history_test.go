@@ -12,7 +12,7 @@ import (
 )
 
 // TestHistoryWithRealZsh feeds actual zsh PTY output through the history
-// parser, no vmux in the loop, to verify lines are captured.
+// parser, no perch in the loop, to verify lines are captured.
 func TestHistoryWithRealZsh(t *testing.T) {
 	tmp := t.TempDir()
 	zdot := filepath.Join(tmp, "zdot")

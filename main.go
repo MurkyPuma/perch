@@ -10,14 +10,14 @@ import (
 	"time"
 )
 
-const usage = `vmux: a friendlier terminal multiplexer
+const usage = `perch: a friendlier terminal multiplexer
 
 usage:
-  vmux [session]      attach to a session (creates it if missing; default "main")
-  vmux ls             list sessions
-  vmux kill-server    stop the server and all sessions
+  perch [session]      attach to a session (creates it if missing; default "main")
+  perch ls             list sessions
+  perch kill-server    stop the server and all sessions
 
-inside vmux:
+inside perch:
   Ctrl-Space          session palette: type to filter or name a new session,
                       Enter to switch/create, 1-9 to jump, Ctrl-x kill, Esc close
   Ctrl-S (palette)    split: show the selected session next to the current one
@@ -27,18 +27,18 @@ inside vmux:
   status bar clicks   click a session name to focus or switch
 `
 
-func vmuxDir() string {
-	if d := os.Getenv("VMUX_DIR"); d != "" {
+func perchDir() string {
+	if d := os.Getenv("PERCH_DIR"); d != "" {
 		return d
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		home = "/tmp"
 	}
-	return filepath.Join(home, ".vmux")
+	return filepath.Join(home, ".perch")
 }
 
-func sockPath() string { return filepath.Join(vmuxDir(), "vmux.sock") }
+func sockPath() string { return filepath.Join(perchDir(), "perch.sock") }
 
 func main() {
 	args := os.Args[1:]
@@ -46,7 +46,7 @@ func main() {
 		switch args[0] {
 		case "--server":
 			if err := runServer(); err != nil {
-				fmt.Fprintln(os.Stderr, "vmux server:", err)
+				fmt.Fprintln(os.Stderr, "perch server:", err)
 				os.Exit(1)
 			}
 			return
@@ -65,12 +65,12 @@ func main() {
 	if len(args) > 0 {
 		session = args[0]
 	}
-	if os.Getenv("VMUX") != "" {
-		fmt.Fprintln(os.Stderr, "vmux: already inside a vmux session (unset VMUX to force)")
+	if os.Getenv("PERCH") != "" {
+		fmt.Fprintln(os.Stderr, "perch: already inside a perch session (unset PERCH to force)")
 		os.Exit(1)
 	}
 	if err := runClient(session); err != nil {
-		fmt.Fprintln(os.Stderr, "vmux:", err)
+		fmt.Fprintln(os.Stderr, "perch:", err)
 		os.Exit(1)
 	}
 }
@@ -82,9 +82,9 @@ func dialServer(autostart bool) (*msgConn, error) {
 		return newMsgConn(conn), nil
 	}
 	if !autostart {
-		return nil, fmt.Errorf("no vmux server running")
+		return nil, fmt.Errorf("no perch server running")
 	}
-	if err := os.MkdirAll(vmuxDir(), 0o700); err != nil {
+	if err := os.MkdirAll(perchDir(), 0o700); err != nil {
 		return nil, err
 	}
 	os.Remove(sockPath()) // stale socket from a dead server
@@ -92,7 +92,7 @@ func dialServer(autostart bool) (*msgConn, error) {
 	if err != nil {
 		return nil, err
 	}
-	logf, err := os.OpenFile(filepath.Join(vmuxDir(), "server.log"),
+	logf, err := os.OpenFile(filepath.Join(perchDir(), "server.log"),
 		os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, err
@@ -112,7 +112,7 @@ func dialServer(autostart bool) (*msgConn, error) {
 			return newMsgConn(conn), nil
 		}
 	}
-	return nil, fmt.Errorf("server failed to start (see %s)", filepath.Join(vmuxDir(), "server.log"))
+	return nil, fmt.Errorf("server failed to start (see %s)", filepath.Join(perchDir(), "server.log"))
 }
 
 // runControl sends a single control message and prints any reply.
@@ -123,12 +123,12 @@ func runControl(typ byte) {
 			fmt.Println("no server running, no sessions")
 			return
 		}
-		fmt.Fprintln(os.Stderr, "vmux:", err)
+		fmt.Fprintln(os.Stderr, "perch:", err)
 		os.Exit(1)
 	}
 	defer mc.Close()
 	if err := mc.writeMsg(typ, nil); err != nil {
-		fmt.Fprintln(os.Stderr, "vmux:", err)
+		fmt.Fprintln(os.Stderr, "perch:", err)
 		os.Exit(1)
 	}
 	for {

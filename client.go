@@ -19,7 +19,7 @@ import (
 // what makes detach/reattach and multi-client attach trivial.
 
 // sessionNameFor derives a session name from the working directory, so bare
-// `vmux` inside a project folder gives you a session named after the project.
+// `perch` inside a project folder gives you a session named after the project.
 func sessionNameFor(cwd string) string {
 	home, _ := os.UserHomeDir()
 	if cwd == "" || cwd == "/" || cwd == home {
@@ -133,6 +133,6 @@ func runClient(session string) error {
 done:
 	signal.Stop(winch)
 	restore()
-	fmt.Printf("[vmux] %s\n", reason)
+	fmt.Printf("[perch] %s\n", reason)
 	return nil
 }

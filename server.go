@@ -56,8 +56,8 @@ type client struct {
 }
 
 func runServer() error {
-	log.SetPrefix("[vmux] ")
-	if err := os.MkdirAll(vmuxDir(), 0o700); err != nil {
+	log.SetPrefix("[perch] ")
+	if err := os.MkdirAll(perchDir(), 0o700); err != nil {
 		return err
 	}
 	os.Remove(sockPath())
@@ -113,7 +113,7 @@ func (srv *Server) handleConn(conn net.Conn) {
 		mc.writeMsg(msgOutput, []byte(srv.listText()))
 		mc.Close()
 	case msgKill:
-		mc.writeMsg(msgOutput, []byte("vmux server stopped\n"))
+		mc.writeMsg(msgOutput, []byte("perch server stopped\n"))
 		mc.Close()
 		srv.shutdown("server stopped")
 	case msgAttach:
@@ -386,7 +386,7 @@ func (c *client) sendTitle() {
 	c.mu.Lock()
 	name := c.sess.name
 	c.mu.Unlock()
-	c.mc.writeMsg(msgOutput, []byte("\x1b]2;vmux · "+name+"\x07"))
+	c.mc.writeMsg(msgOutput, []byte("\x1b]2;perch · "+name+"\x07"))
 }
 
 // sessionsByName gives a stable ordering for the status bar.
@@ -609,7 +609,7 @@ func (c *client) liveEvent(ev event) {
 		case keyCtrlSpace:
 			c.openPalette()
 		case keyCtrlBackslash:
-			c.exit("detached · sessions still running · reattach with: vmux")
+			c.exit("detached · sessions still running · reattach with: perch")
 		case keyCtrlO:
 			c.mu.Lock()
 			n := len(c.view)
@@ -829,7 +829,7 @@ func (c *client) paletteEvent(ev event) {
 			c.filter = nil
 			c.mu.Unlock()
 		case keyCtrlD:
-			c.exit("detached · sessions still running · reattach with: vmux")
+			c.exit("detached · sessions still running · reattach with: perch")
 		case keyCtrlS:
 			c.mu.Lock()
 			list := c.filteredSessions()

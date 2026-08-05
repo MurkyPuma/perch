@@ -17,7 +17,7 @@ import (
 // the real product.
 func TestScrollViewRealistic(t *testing.T) {
 	tmp := t.TempDir()
-	bin := filepath.Join(tmp, "vmux")
+	bin := filepath.Join(tmp, "perch")
 	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
 		t.Fatalf("build: %v\n%s", err, out)
 	}
@@ -25,7 +25,7 @@ func TestScrollViewRealistic(t *testing.T) {
 	os.MkdirAll(zdot, 0o755)
 	os.WriteFile(filepath.Join(zdot, ".zshrc"), []byte("PROMPT='%n@%m %1~ %% '\n"), 0o644)
 
-	env := []string{"VMUX_DIR=" + filepath.Join(tmp, "state"), "SHELL=/bin/zsh",
+	env := []string{"PERCH_DIR=" + filepath.Join(tmp, "state"), "SHELL=/bin/zsh",
 		"ZDOTDIR=" + zdot, "PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME"),
 		"TERM=xterm-256color"}
 	defer func() {

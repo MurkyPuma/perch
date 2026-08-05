@@ -1,4 +1,4 @@
-// Command snap produces the README screenshots. It runs a scripted vmux
+// Command snap produces the README screenshots. It runs a scripted perch
 // session under a real PTY, mirrors the client's output into a vt10x screen,
 // and dumps styled HTML snapshots that headless Chrome renders to PNG.
 //
@@ -38,25 +38,25 @@ func run(outdir string) error {
 	if err := os.MkdirAll(outdir, 0o755); err != nil {
 		return err
 	}
-	work, err := os.MkdirTemp("", "vmux-snap")
+	work, err := os.MkdirTemp("", "perch-snap")
 	if err != nil {
 		return err
 	}
 	defer os.RemoveAll(work)
 
-	// isolated vmux server + a controlled zsh prompt for pretty output
+	// isolated perch server + a controlled zsh prompt for pretty output
 	zdot := filepath.Join(work, "zdot")
 	os.MkdirAll(zdot, 0o755)
 	os.WriteFile(filepath.Join(zdot, ".zshrc"),
 		[]byte("PROMPT='%F{213}➜%f %F{81}%1~%f '\nalias ls='ls -G'\n"), 0o644)
 
 	env := append(os.Environ(),
-		"VMUX_DIR="+filepath.Join(work, "state"),
+		"PERCH_DIR="+filepath.Join(work, "state"),
 		"SHELL=/bin/zsh",
 		"ZDOTDIR="+zdot,
 		"CLICOLOR=1",
 	)
-	bin := filepath.Join(work, "vmux")
+	bin := filepath.Join(work, "perch")
 	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
 		return fmt.Errorf("build: %v\n%s", err, out)
 	}
@@ -118,7 +118,12 @@ func run(outdir string) error {
 		{send: "seq 12 400\r", wait: 900 * time.Millisecond},
 		{send: "\x1b[<64;40;10M\x1b[<64;40;10M\x1b[<64;40;10M", wait: 200 * time.Millisecond},
 		{send: "\x1b[<64;40;10M\x1b[<64;40;10M", wait: 600 * time.Millisecond, shot: "scroll"},
-		{send: "q", wait: 300 * time.Millisecond},
+		{send: "q", wait: 400 * time.Millisecond},
+		{send: "clear\r", wait: 400 * time.Millisecond},
+		{send: "./scripts/dev.sh\r", wait: 700 * time.Millisecond},
+		{send: "\x00", wait: 500 * time.Millisecond},
+		{send: "\x13", wait: 700 * time.Millisecond}, // Ctrl-S: split in the previous session
+		{send: "ls\r", wait: 700 * time.Millisecond, shot: "split"},
 	}
 	for _, st := range steps {
 		if st.send != "" {
