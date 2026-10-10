@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/MurkyPuma/perch/internal/vt10x"
 	"github.com/creack/pty"
 )
 
@@ -129,7 +130,7 @@ func TestEndToEnd(t *testing.T) {
 	// scrollback: generate history, wheel up, indicator appears
 	m = tt.mark()
 	tt.send("seq 1 200\r")
-	tt.waitFor(m, "200")
+	tt.waitFor(m, "\x1b[0m200 ") // a painted row; bare "200" matches the typed command
 	m = tt.mark()
 	tt.send("\x1b[<64;10;10M") // SGR wheel up
 	tt.waitFor(m, "SCROLL")
@@ -211,6 +212,54 @@ func TestSplitView(t *testing.T) {
 	m = tt.mark()
 	tt.send("echo right-again\r")
 	tt.waitFor(m, "right-again")
+
+	// scrolling the focused tile keeps the other tile on screen beside it
+	m = tt.mark()
+	tt.send("seq 1 100\r")
+	tt.waitFor(m, "H\x1b[0m100 ") // a painted row; "right" sits in the first column
+	m = tt.mark()
+	tt.send("\x1b[<64;10;10M") // wheel up over it
+	tt.waitFor(m, "SCROLL")
+	time.Sleep(200 * time.Millisecond)
+	tt.mu.Lock()
+	vt := vt10x.New(vt10x.WithSize(100, 28))
+	vt.Write(tt.buf)
+	tt.mu.Unlock()
+	rows := strings.Split(vt.String(), "\n")
+	if !strings.Contains(vt.String(), "in-left") {
+		t.Fatalf("other tile gone while one scrolls:\n%s", vt.String())
+	}
+	for y, row := range rows[:27] {
+		if !strings.Contains(row, "│") {
+			t.Fatalf("row %d lost the tile separator:\n%s", y, vt.String())
+		}
+	}
+	m = tt.mark()
+	tt.send("q")
+	tt.waitFor(m, "H\x1b[0m100 ") // live view again
+
+	// palette Ctrl-L stacks the tiles top to bottom: a full-width rule
+	// replaces the column separator, and typing still reaches the focus
+	m = tt.mark()
+	tt.send("\x00")
+	tt.waitFor(m, "perch sessions")
+	m = tt.mark()
+	tt.send("\x0c")
+	tt.waitFor(m, strings.Repeat("─", 100))
+	m = tt.mark()
+	tt.send("echo stacked-ok\r")
+	tt.waitFor(m, "stacked-ok")
+	time.Sleep(200 * time.Millisecond)
+	tt.mu.Lock()
+	vt = vt10x.New(vt10x.WithSize(100, 28))
+	vt.Write(tt.buf)
+	tt.mu.Unlock()
+	if strings.Contains(vt.String(), "│") {
+		t.Fatalf("column separator still drawn after flip:\n%s", vt.String())
+	}
+	if !strings.Contains(vt.String(), "in-left") || !strings.Contains(vt.String(), "stacked-ok") {
+		t.Fatalf("stacked view missing a tile:\n%s", vt.String())
+	}
 
 	// collapse back to a single session via palette + Enter
 	m = tt.mark()

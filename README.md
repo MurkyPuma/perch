@@ -43,9 +43,11 @@ perch api web        # open both at once, split
 or from inside: `Ctrl-Space` to open the palette, pick a session, and press
 `Ctrl-S` instead of Enter. Enter means "take me there"; `Ctrl-S` means "show
 it next to what I have" (press it again on a visible session to remove it).
-Up to three columns. There is no separate pane primitive to learn: a split is
-just two sessions on screen at once. `Ctrl-O` or a click moves focus, and the
-focused tile owns your keyboard and cursor.
+Up to three at once. Prefer them stacked top to bottom? `Ctrl-L` in the
+palette flips the whole layout between side by side and stacked. There is no
+separate pane primitive to learn: a split is just two sessions on screen at
+once. `Ctrl-O` or a click moves focus, and the focused tile owns your keyboard
+and cursor.
 
 ![split view](assets/split.png)
 

@@ -5,7 +5,7 @@ import (
 	"hash/fnv"
 	"strings"
 
-	"github.com/hinshun/vt10x"
+	"github.com/MurkyPuma/perch/internal/vt10x"
 )
 
 // A frame is a full screen to present: one string per row (self-contained SGR,
@@ -103,11 +103,19 @@ func sgrForColor(c vt10x.Color, fg bool, parts *[]string) {
 // gridLine renders row y of the virtual terminal into an ANSI string.
 // Caller must hold the session lock.
 func gridLine(t vt10x.Terminal, y, cols int) string {
+	cells := make([]vt10x.Glyph, cols)
+	for x := range cells {
+		cells[x] = t.Cell(x, y)
+	}
+	return glyphsLine(cells)
+}
+
+// glyphsLine renders a row of cells into an ANSI string, one cell per column.
+func glyphsLine(cells []vt10x.Glyph) string {
 	var b strings.Builder
 	lastFG := vt10x.DefaultFG
 	lastBG := vt10x.DefaultBG
-	for x := 0; x < cols; x++ {
-		g := t.Cell(x, y)
+	for _, g := range cells {
 		if g.FG != lastFG || g.BG != lastBG {
 			var parts []string
 			sgrForColor(g.FG, true, &parts)
@@ -120,6 +128,9 @@ func gridLine(t vt10x.Terminal, y, cols int) string {
 			ch = ' '
 		}
 		b.WriteRune(ch)
+	}
+	if lastFG != vt10x.DefaultFG || lastBG != vt10x.DefaultBG {
+		b.WriteString("\x1b[0m")
 	}
 	return b.String()
 }
@@ -191,12 +202,12 @@ type clickRange struct {
 	name   string
 }
 
-// tileWidths splits cols across n side-by-side tiles with 1-column separators.
-func tileWidths(cols, n int) []int {
+// splitSpan divides total cells among n tiles with 1-cell separators.
+func splitSpan(total, n int) []int {
 	if n < 1 {
 		n = 1
 	}
-	avail := cols - (n - 1)
+	avail := total - (n - 1)
 	base := avail / n
 	rem := avail % n
 	w := make([]int, n)
@@ -207,6 +218,44 @@ func tileWidths(cols, n int) []int {
 		}
 	}
 	return w
+}
+
+// A rect is one tile's area on screen, 0-based, separators excluded.
+type rect struct{ x, y, w, h int }
+
+// tileRects lays n tiles out over the grid above the status bar: side by
+// side in columns, or stacked top to bottom.
+func tileRects(cols, rows, n int, stacked bool) []rect {
+	var out []rect
+	off := 0
+	if stacked {
+		for _, h := range splitSpan(rows-1, n) {
+			out = append(out, rect{0, off, cols, h})
+			off += h + 1
+		}
+		return out
+	}
+	for _, w := range splitSpan(cols, n) {
+		out = append(out, rect{off, 0, w, rows - 1})
+		off += w + 1
+	}
+	return out
+}
+
+// tileAt maps a 1-based screen point to (tile index, tile-local x, y), also
+// 1-based. Returns -1 on separators and the status bar.
+func tileAt(rects []rect, x, y int) (int, int, int) {
+	for i, r := range rects {
+		if x > r.x && x <= r.x+r.w && y > r.y && y <= r.y+r.h {
+			return i, x - r.x, y - r.y
+		}
+	}
+	return -1, x, y
+}
+
+// rects lays out the client's current view. Caller must hold c.mu.
+func (c *client) rects() []rect {
+	return tileRects(c.cols, c.rows, len(c.view), c.stacked)
 }
 
 // statusBar builds the bottom row. The focused session gets its identity color
@@ -266,102 +315,131 @@ func statusBar(srv *Server, view []*Session, focus int, cols int, extra string) 
 // renderLive paints the visible tiles side by side plus the status bar.
 // Caller must hold c.mu.
 func (c *client) renderLive() *frame {
+	return c.renderTiles(false)
+}
+
+// renderScroll is the live layout with the focused tile showing its
+// scrollback, so in a split the other tiles keep running beside it.
+// Caller must hold c.mu.
+func (c *client) renderScroll() *frame {
+	return c.renderTiles(true)
+}
+
+func (c *client) renderTiles(scroll bool) *frame {
 	view := c.view
-	widths := tileWidths(c.cols, len(view))
-	gridRows := c.rows - 1
+	rects := c.rects()
 	f := &frame{lines: make([]string, 0, c.rows)}
 
 	tiles := make([][]string, len(view))
-	xoff := 0
+	extra := ""
 	for i, s := range view {
-		w := widths[i]
-		lines := make([]string, gridRows)
+		r := rects[i]
+		if scroll && i == c.focus {
+			tiles[i], extra = c.scrollTile(s, r.w, r.h)
+			continue
+		}
+		lines := make([]string, r.h)
 		s.mu.Lock()
 		vcols, vrows := s.vt.Size()
 		s.vt.Lock()
-		cw := min(vcols, w)
-		for y := 0; y < gridRows; y++ {
+		cw := min(vcols, r.w)
+		for y := 0; y < r.h; y++ {
 			var ln string
 			if y < vrows {
 				ln = gridLine(s.vt, y, cw)
+			} else {
+				cw = 0
 			}
-			if cw < w {
-				ln += "\x1b[0m" + strings.Repeat(" ", w-cw)
+			if cw < r.w {
+				ln += "\x1b[0m" + strings.Repeat(" ", r.w-cw)
 			}
 			lines[y] = ln
 		}
 		if i == c.focus {
 			cur := s.vt.Cursor()
-			f.curX, f.curY = xoff+cur.X, cur.Y
-			f.curVis = s.vt.CursorVisible() && cur.Y < gridRows && cur.X < w
+			f.curX, f.curY = r.x+cur.X, r.y+cur.Y
+			f.curVis = s.vt.CursorVisible() && cur.Y < r.h && cur.X < r.w
 		}
 		s.vt.Unlock()
 		s.mu.Unlock()
 		tiles[i] = lines
-		xoff += w + 1
 	}
 
-	const sep = "\x1b[0;38;5;238m│\x1b[0m"
-	for y := 0; y < gridRows; y++ {
-		if len(view) == 1 {
-			f.lines = append(f.lines, tiles[0][y])
-			continue
-		}
-		parts := make([]string, len(view))
+	switch {
+	case len(view) == 1:
+		f.lines = append(f.lines, tiles[0]...)
+	case c.stacked:
+		hsep := "\x1b[0;38;5;238m" + strings.Repeat("─", c.cols) + "\x1b[0m"
 		for i := range view {
-			parts[i] = tiles[i][y]
+			if i > 0 {
+				f.lines = append(f.lines, hsep)
+			}
+			f.lines = append(f.lines, tiles[i]...)
 		}
-		f.lines = append(f.lines, strings.Join(parts, sep))
+	default:
+		const vsep = "\x1b[0;38;5;238m│\x1b[0m"
+		parts := make([]string, len(view))
+		for y := 0; y < c.rows-1; y++ {
+			for i := range view {
+				parts[i] = tiles[i][y]
+			}
+			f.lines = append(f.lines, strings.Join(parts, vsep))
+		}
 	}
 
 	c.srv.mu.Lock()
-	bar, ranges := statusBar(c.srv, view, c.focus, c.cols, "")
+	bar, ranges := statusBar(c.srv, view, c.focus, c.cols, extra)
 	c.srv.mu.Unlock()
 	c.statusRanges = ranges
 	f.lines = append(f.lines, bar)
 	return f
 }
 
-// renderScroll paints the scrollback view anchored at c.anchor (an absolute
-// logical line index into the session history). Caller must hold c.mu.
-func (c *client) renderScroll() *frame {
-	s := c.sess
-	f := &frame{lines: make([]string, 0, c.rows)}
-	viewRows := c.rows - 1
+// scrollTile renders the scrollback document anchored at c.anchor (an
+// absolute line index) into a tile w cells wide, padding every row to w so
+// neighbouring tiles stay aligned. Returns the rows and the status text.
+// Caller must hold c.mu.
+func (c *client) scrollTile(s *Session, w, rows int) ([]string, string) {
+	lines := make([]string, 0, rows)
+	add := func(ln string, lw int) {
+		if lw < w {
+			ln += "\x1b[0m" + strings.Repeat(" ", w-lw)
+		}
+		lines = append(lines, ln)
+	}
 
 	s.mu.Lock()
-	total := s.hist.DocLen()
+	s.vt.Lock()
+	total := s.docLen()
 	first := s.hist.First()
 	if c.anchor < first {
 		c.anchor = first
 	}
 	pos := c.anchor - first + 1
-	for abs := c.anchor; len(f.lines) < viewRows && abs < total; abs++ {
-		hl := s.hist.DocLine(abs)
-		if hl.w <= c.cols {
-			f.lines = append(f.lines, hl.s)
+	for abs := c.anchor; len(lines) < rows && abs < total; abs++ {
+		hl := s.docLine(abs)
+		if hl.w <= w {
+			add(hl.s, hl.w)
 			continue
 		}
-		for _, chunk := range wrapLine(hl.s, c.cols) {
-			if len(f.lines) >= viewRows {
+		chunks := wrapLine(hl.s, w)
+		for k, chunk := range chunks {
+			if len(lines) >= rows {
 				break
 			}
-			f.lines = append(f.lines, chunk)
+			cw := w
+			if k == len(chunks)-1 {
+				cw = hl.w - k*w
+			}
+			add(chunk, cw)
 		}
 	}
+	s.vt.Unlock()
 	s.mu.Unlock()
-	for len(f.lines) < viewRows {
-		f.lines = append(f.lines, "\x1b[38;5;240m~")
+	for len(lines) < rows {
+		add("\x1b[38;5;240m~", 1)
 	}
-
-	extra := fmt.Sprintf(" SCROLL %d/%d · wheel/PgUp/PgDn · q quit ", pos, total-first)
-	c.srv.mu.Lock()
-	bar, ranges := statusBar(c.srv, c.view, c.focus, c.cols, extra)
-	c.srv.mu.Unlock()
-	c.statusRanges = ranges
-	f.lines = append(f.lines, bar)
-	f.curVis = false
-	return f
+	return lines, fmt.Sprintf(" SCROLL %d/%d · wheel/PgUp/PgDn · q quit ", pos, total-first)
 }
 
 // renderPalette paints the full-screen session switcher. Caller must hold c.mu.
@@ -444,6 +522,8 @@ func (c *client) renderPalette() *frame {
 		l.add("0;38;5;244", " open here      ")
 		l.add("0;38;5;250", "^S")
 		l.add("0;38;5;244", " open side-by-side      ")
+		l.add("0;38;5;250", "^L")
+		l.add("0;38;5;244", " flip layout      ")
 		l.add("0;38;5;250", "^X")
 		l.add("0;38;5;244", " kill")
 		f.lines[row+2] = l.String()
@@ -451,7 +531,7 @@ func (c *client) renderPalette() *frame {
 
 	var hints sb
 	hints.add(styleBarBG, " ")
-	hints.add(styleBarDim, "↵ switch/create · ^S split · 1-9 jump · ^X kill · ^D detach · esc close")
+	hints.add(styleBarDim, "↵ switch/create · ^S split · ^L flip · 1-9 jump · ^X kill · ^D detach · esc close")
 	hints.pad(styleBarBG, c.cols-hints.w)
 	f.lines[c.rows-1] = hints.String()
 	c.statusRanges = nil

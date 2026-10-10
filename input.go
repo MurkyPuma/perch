@@ -39,6 +39,7 @@ const (
 	keyCtrlBackslash
 	keyCtrlC
 	keyCtrlD
+	keyCtrlL
 	keyCtrlN
 	keyCtrlO
 	keyCtrlP
@@ -221,6 +222,8 @@ func ctrlKey(b byte) key {
 		return keyCtrlC
 	case 0x04:
 		return keyCtrlD
+	case 0x0c:
+		return keyCtrlL
 	case 0x0e:
 		return keyCtrlN
 	case 0x0f:

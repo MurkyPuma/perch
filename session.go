@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/MurkyPuma/perch/internal/vt10x"
 	"github.com/creack/pty"
-	"github.com/hinshun/vt10x"
 )
 
 // A Session is one shell on one PTY, plus a virtual terminal that tracks its
@@ -46,12 +46,13 @@ func newSession(name, cwd string, cols, rows int) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
+	hist := newHistory(historyMax)
 	s := &Session{
 		name:       name,
 		cmd:        cmd,
 		ptmx:       ptmx,
-		vt:         vt10x.New(vt10x.WithSize(cols, rows)),
-		hist:       newHistory(historyMax),
+		vt:         vt10x.New(vt10x.WithSize(cols, rows), vt10x.WithScrollback(hist.pushGlyphs)),
+		hist:       hist,
 		cols:       cols,
 		rows:       rows,
 		lastActive: time.Now(),
@@ -64,13 +65,15 @@ func newSession(name, cwd string, cols, rows int) (*Session, error) {
 // shell exits.
 func (s *Session) readLoop(srv *Server) {
 	buf := make([]byte, 32*1024)
+	keep := 0 // bytes of a UTF-8 rune split across reads, carried to the next
 	for {
-		n, err := s.ptmx.Read(buf)
+		n, err := s.ptmx.Read(buf[keep:])
 		if n > 0 {
+			n += keep
 			s.mu.Lock()
-			s.vt.Write(buf[:n])
-			s.hist.Feed(buf[:n])
+			w, _ := s.vt.Write(buf[:n])
 			s.mu.Unlock()
+			keep = copy(buf, buf[w:n])
 			srv.sessionUpdated(s)
 		}
 		if err != nil {
@@ -92,16 +95,34 @@ func (s *Session) resize(cols, rows int) {
 	s.vt.Resize(cols, rows)
 }
 
-func (s *Session) altScreen() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.hist.AltScreen
+// docLen and docLine expose scrollback plus the live screen as one document,
+// so the bottom of the scroll view lines up with what was just on screen.
+// Absolute indices: history lines first, then screen rows. Caller holds s.mu.
+func (s *Session) docLen() int {
+	return s.hist.Total() + s.screenUsed()
 }
 
-func (s *Session) mouseOn() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.hist.MouseOn
+func (s *Session) docLine(abs int) histLine {
+	if abs < s.hist.Total() {
+		return s.hist.LineAt(abs)
+	}
+	cols, _ := s.vt.Size()
+	return histLine{s: gridLine(s.vt, abs-s.hist.Total(), cols), w: cols}
+}
+
+// screenUsed counts screen rows down to the cursor or the last non-blank row,
+// whichever is lower, so empty rows below a prompt are not scrollable.
+func (s *Session) screenUsed() int {
+	cols, rows := s.vt.Size()
+	used := s.vt.Cursor().Y + 1
+	for y := rows - 1; y >= used; y-- {
+		for x := 0; x < cols; x++ {
+			if !blankCell(s.vt.Cell(x, y)) {
+				return y + 1
+			}
+		}
+	}
+	return used
 }
 
 func (s *Session) writeInput(p []byte) {

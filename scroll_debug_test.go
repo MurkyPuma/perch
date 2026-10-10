@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hinshun/vt10x"
+	"github.com/MurkyPuma/perch/internal/vt10x"
 )
 
 // TestScrollViewRealistic drives a zsh session that mimics a default macOS
@@ -44,7 +44,7 @@ func TestScrollViewRealistic(t *testing.T) {
 	tt.waitFor(m, "no-trailing-newline")
 	m = tt.mark()
 	tt.send("seq 1 40\r")
-	tt.waitFor(m, "40")
+	tt.waitFor(m, "\x1b[0m40 ") // a painted row; bare "40" matches the typed command
 
 	screen := func() string {
 		tt.mu.Lock()

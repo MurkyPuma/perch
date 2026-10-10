@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MurkyPuma/perch/internal/vt10x"
 	"github.com/creack/pty"
-	"github.com/hinshun/vt10x"
 )
 
 const (

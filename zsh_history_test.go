@@ -1,18 +1,21 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/MurkyPuma/perch/internal/vt10x"
 	"github.com/creack/pty"
 )
 
 // TestHistoryWithRealZsh feeds actual zsh PTY output through the history
-// parser, no perch in the loop, to verify lines are captured.
+// capture, no perch in the loop, to verify lines are captured.
 func TestHistoryWithRealZsh(t *testing.T) {
 	tmp := t.TempDir()
 	zdot := filepath.Join(tmp, "zdot")
@@ -44,25 +47,39 @@ func TestHistoryWithRealZsh(t *testing.T) {
 		}
 	}()
 
-	time.Sleep(1500 * time.Millisecond)
+	waitFor := func(substr string) {
+		for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(25 * time.Millisecond) {
+			mu.Lock()
+			ok := strings.Contains(string(buf), substr)
+			mu.Unlock()
+			if ok {
+				return
+			}
+		}
+		t.Fatalf("timeout waiting for %q", substr)
+	}
+	waitFor("% ")
 	ptmx.Write([]byte("seq 1 40\r"))
-	time.Sleep(1200 * time.Millisecond)
-	ptmx.Write([]byte("exit\r"))
-	time.Sleep(300 * time.Millisecond)
+	waitFor("\n40\r\n")
 
 	mu.Lock()
 	raw := append([]byte{}, buf...)
 	mu.Unlock()
 
 	h := newHistory(1000)
-	h.Feed(raw)
-	t.Logf("raw bytes: %d, history lines: %d, altScreen=%v paste=%v",
-		len(raw), h.Total(), h.AltScreen, h.Paste)
-	if h.Total() < 40 {
-		head := raw
-		if len(head) > 1500 {
-			head = head[:1500]
+	vt := vt10x.New(vt10x.WithSize(100, 28), vt10x.WithScrollback(h.pushGlyphs))
+	vt.Write(raw)
+	t.Logf("raw bytes: %d, history lines: %d", len(raw), h.Total())
+	// every line of seq output is in history or still on screen, once
+	doc := strings.Join(histStrings(h), "\n") + "\n" + vt.String()
+	lines := strings.Split(doc, "\n")
+	for i, l := range lines {
+		lines[i] = strings.TrimRight(l, " ")
+	}
+	doc = strings.Join(lines, "\n")
+	for n := 1; n <= 40; n++ {
+		if c := strings.Count("\n"+doc+"\n", fmt.Sprintf("\n%d\n", n)); c != 1 {
+			t.Fatalf("line %d appears %d times; history:\n%s", n, c, strings.Join(histStrings(h), "\n"))
 		}
-		t.Fatalf("expected >=40 lines, got %d; first raw bytes:\n%q", h.Total(), head)
 	}
 }

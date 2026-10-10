@@ -1,121 +1,98 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/MurkyPuma/perch/internal/vt10x"
 )
 
-func feedString(h *History, s string) { h.Feed([]byte(s)) }
-
-func TestHistoryPlainLines(t *testing.T) {
-	h := newHistory(100)
-	feedString(h, "hello\r\nworld\r\n")
-	if h.Total() != 2 {
-		t.Fatalf("want 2 lines, got %d", h.Total())
-	}
-	if h.LineAt(0).s != "hello" || h.LineAt(1).s != "world" {
-		t.Fatalf("got %q, %q", h.LineAt(0).s, h.LineAt(1).s)
-	}
-}
-
-func TestHistoryColorCarriesAcrossLines(t *testing.T) {
-	h := newHistory(100)
-	feedString(h, "\x1b[31mred\r\nstill\x1b[0m\r\n")
-	if !strings.Contains(h.LineAt(0).s, "\x1b[31m") {
-		t.Fatalf("line 0 lost color: %q", h.LineAt(0).s)
-	}
-	// second line began while red was active, so it must reopen the color
-	if !strings.HasPrefix(h.LineAt(1).s, "\x1b[0;31m") {
-		t.Fatalf("line 1 does not reopen color: %q", h.LineAt(1).s)
-	}
-}
-
-// Ink-style live area: apps like Claude Code repaint their last lines by
-// erasing and moving the cursor up. History must keep only the final state.
-func TestHistoryInkRepaint(t *testing.T) {
-	h := newHistory(100)
-	feedString(h, "static\r\nliveA-old\r\nliveB-old")
-	// erase current line, up one, erase, then rewrite both live lines
-	feedString(h, "\x1b[2K\x1b[1A\x1b[2K\rliveA-new\r\nliveB-new")
-	if h.Total() != 2 {
-		t.Fatalf("want 2 completed lines, got %d", h.Total())
-	}
-	if h.LineAt(0).s != "static" || h.LineAt(1).s != "liveA-new" {
-		t.Fatalf("got %q, %q", h.LineAt(0).s, h.LineAt(1).s)
-	}
-	if got := h.DocLine(2).s; got != "liveB-new" {
-		t.Fatalf("in-progress line: %q", got)
-	}
-}
-
-// Truecolor SGR state crossing many lines must reopen as one well-formed
-// sequence, never as sliced fragments like ";215;119;87m" leaking into text.
-func TestHistoryTruecolorNoFragments(t *testing.T) {
+// feedTerm runs s through a cols x rows emulator wired to a fresh history,
+// the same way a session does.
+func feedTerm(cols, rows int, s string) (*History, vt10x.Terminal) {
 	h := newHistory(1000)
-	for i := 0; i < 50; i++ {
-		feedString(h, "\x1b[38;2;215;119;87m\x1b[48;2;30;30;30m\x1b[1mx\r\n")
+	vt := vt10x.New(vt10x.WithSize(cols, rows), vt10x.WithScrollback(h.pushGlyphs))
+	vt.Write([]byte(s))
+	return h, vt
+}
+
+func histStrings(h *History) []string {
+	var out []string
+	for i := h.First(); i < h.Total(); i++ {
+		out = append(out, h.LineAt(i).s)
 	}
-	feedString(h, "tail\r\n")
-	last := h.LineAt(h.Total() - 1)
-	if !strings.HasPrefix(last.s, "\x1b[0;1;38;2;215;119;87;48;2;30;30;30m") {
-		t.Fatalf("bad canonical prefix: %q", last.s)
+	return out
+}
+
+func TestScrollbackPlainLines(t *testing.T) {
+	h, _ := feedTerm(10, 3, "a\r\nb\r\nc\r\nd\r\n")
+	if got := histStrings(h); strings.Join(got, ",") != "a,b" {
+		t.Fatalf("got %q", got)
 	}
-	for i := 0; i < h.Total(); i++ {
-		s := h.LineAt(i).s
-		if len(s) > 0 && (s[0] == ';' || (s[0] >= '0' && s[0] <= '9')) {
-			t.Fatalf("line %d starts with SGR fragment garbage: %q", i, s)
+	if h.LineAt(0).w != 1 {
+		t.Fatalf("trailing blanks not trimmed: w=%d", h.LineAt(0).w)
+	}
+}
+
+func TestScrollbackKeepsColor(t *testing.T) {
+	h, _ := feedTerm(10, 2, "\x1b[31mred\x1b[0m\r\nx\r\ny\r\n")
+	if got := h.LineAt(0).s; got != "\x1b[31;49mred\x1b[0m" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+// Claude Code / Ink repaint their live area in place: cursor up, rewrite a
+// line, cursor back down. Only what actually scrolls off may land in history,
+// in its final state, and nothing may be lost.
+func TestScrollbackInkRepaint(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("one\r\ntwo\r\nspin-a\r\nstatus")
+	b.WriteString("\x1b[1A\r\x1b[2Kspin-b\x1b[1B\r") // repaint spinner, go back down
+	for i := 1; i <= 6; i++ {
+		fmt.Fprintf(&b, "\r\nout-%d", i)
+	}
+	h, _ := feedTerm(20, 4, b.String())
+	want := "one,two,spin-b,status,out-1,out-2"
+	if got := strings.Join(histStrings(h), ","); got != want {
+		t.Fatalf("got %s\nwant %s", got, want)
+	}
+}
+
+func TestScrollbackAltScreenSkipped(t *testing.T) {
+	h, _ := feedTerm(20, 2, "before\r\n\x1b[?1049h"+strings.Repeat("vim noise\r\n", 5)+"\x1b[?1049l\r\nafter\r\n")
+	for _, l := range histStrings(h) {
+		if strings.Contains(l, "vim") {
+			t.Fatalf("alt screen leaked into history: %q", histStrings(h))
 		}
 	}
 }
 
-func TestHistoryCursorForwardIsSpacing(t *testing.T) {
-	h := newHistory(10)
-	feedString(h, "a\x1b[3Cb\r\n")
-	if got := h.LineAt(0); got.s != "a   b" || got.w != 5 {
-		t.Fatalf("got %q w=%d", got.s, got.w)
-	}
-	// column-absolute padding
-	feedString(h, "x\x1b[5Gy\r\n")
-	if got := h.LineAt(1); got.s != "x   y" || got.w != 5 {
-		t.Fatalf("got %q w=%d", got.s, got.w)
+func TestScrollbackModes(t *testing.T) {
+	_, vt := feedTerm(10, 2, "\x1b[?2004h\x1b[?1000h")
+	if vt.Mode()&vt10x.ModePaste == 0 || vt.Mode()&vt10x.ModeMouseMask == 0 {
+		t.Fatalf("modes not tracked: %b", vt.Mode())
 	}
 }
 
-func TestHistoryCRRewrite(t *testing.T) {
-	h := newHistory(100)
-	feedString(h, "progress 10%\rprogress 99%\r\n")
-	if h.LineAt(0).s != "progress 99%" {
-		t.Fatalf("got %q", h.LineAt(0).s)
+// A multibyte rune split across two PTY reads must not be dropped.
+func TestWriteSplitRune(t *testing.T) {
+	vt := vt10x.New(vt10x.WithSize(10, 2))
+	p := []byte("a─b")
+	n, _ := vt.Write(p[:3]) // "a" plus 2 of the 3 bytes of "─"
+	if n != 1 {
+		t.Fatalf("consumed %d, want 1", n)
 	}
-}
-
-func TestHistoryAltScreenSkipped(t *testing.T) {
-	h := newHistory(100)
-	feedString(h, "before\r\n\x1b[?1049hvim noise\x1b[?1049lafter\r\n")
-	if h.Total() != 2 {
-		t.Fatalf("want 2 lines, got %d", h.Total())
-	}
-	if h.LineAt(1).s != "after" {
-		t.Fatalf("got %q", h.LineAt(1).s)
-	}
-}
-
-func TestHistoryModeSniffing(t *testing.T) {
-	h := newHistory(10)
-	feedString(h, "\x1b[?1000h\x1b[?2004h\x1b[?1h")
-	if !h.MouseOn || !h.Paste || !h.CursorKeys {
-		t.Fatalf("flags not set: mouse=%v paste=%v cursorkeys=%v", h.MouseOn, h.Paste, h.CursorKeys)
-	}
-	feedString(h, "\x1b[?1000l")
-	if h.MouseOn {
-		t.Fatal("mouse flag not cleared")
+	vt.Write(append(p[n:3:3], p[3:]...))
+	if got := strings.TrimSpace(strings.Split(vt.String(), "\n")[0]); got != "a─b" {
+		t.Fatalf("got %q", got)
 	}
 }
 
 func TestHistoryTrimKeepsAbsoluteIndices(t *testing.T) {
 	h := newHistory(10)
 	for i := 0; i < 25; i++ {
-		feedString(h, "line\r\n")
+		h.push(histLine{s: "line", w: 4})
 	}
 	if h.Total() != 25 || h.First() != 15 {
 		t.Fatalf("total=%d first=%d", h.Total(), h.First())
@@ -172,5 +149,41 @@ func TestSanitizeName(t *testing.T) {
 		if got := sanitizeName(in); got != want {
 			t.Errorf("sanitizeName(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// Claude Code probes for keyboard protocols mid-session with CSI ?u, CSI <u
+// and CSI >4m. Read without their prefix these restore the cursor and reset
+// colors, after which Ink's relative repaints land on the wrong rows.
+func TestPrefixedQueriesIgnored(t *testing.T) {
+	vt := vt10x.New(vt10x.WithSize(20, 4))
+	vt.Write([]byte("\x1b7\x1b[3;5H\x1b[31m\x1b[?u\x1b[<u\x1b[>4m\x1b[>0qX"))
+	if c := vt.Cursor(); c.X != 5 || c.Y != 2 {
+		t.Fatalf("cursor moved to %d,%d", c.X, c.Y)
+	}
+	if fg := vt.Cell(4, 2).FG; fg != 1 {
+		t.Fatalf("color reset: fg=%d", fg)
+	}
+}
+
+// Text wrapped in a narrow split re-wraps when the session widens again, and
+// rows that no longer fit when it narrows go to scrollback, not nowhere.
+func TestResizeReflows(t *testing.T) {
+	h, vt := feedTerm(10, 4, "abcdefghijklmno\r\nshort\r\n$ ")
+	vt.Resize(20, 4)
+	rows := strings.Split(vt.String(), "\n")
+	if strings.TrimRight(rows[0], " ") != "abcdefghijklmno" || strings.TrimRight(rows[1], " ") != "short" {
+		t.Fatalf("not reflowed on widen:\n%s", vt.String())
+	}
+	if c := vt.Cursor(); c.X != 2 || c.Y != 2 {
+		t.Fatalf("cursor at %d,%d, want 2,2", c.X, c.Y)
+	}
+
+	vt.Resize(5, 4) // 3 + 1 + 1 rows: the first row must go to scrollback
+	if got := strings.Join(histStrings(h), ","); got != "abcde" {
+		t.Fatalf("history %q", got)
+	}
+	if c := vt.Cursor(); c.X != 2 || c.Y != 3 {
+		t.Fatalf("cursor at %d,%d, want 2,3", c.X, c.Y)
 	}
 }

@@ -14,7 +14,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/hinshun/vt10x"
+	"github.com/MurkyPuma/perch/internal/vt10x"
 )
 
 type Server struct {
@@ -38,7 +38,8 @@ type client struct {
 
 	mu           sync.Mutex
 	sess         *Session   // focused session; invariant: sess == view[focus]
-	view         []*Session // sessions shown side by side, left to right
+	view         []*Session // sessions shown together, left to right or top to bottom
+	stacked      bool       // tiles stacked top to bottom instead of side by side
 	focus        int
 	cols, rows   int
 	mode         int
@@ -243,11 +244,10 @@ func (srv *Server) attach(mc *msgConn, req attachReq) {
 func (c *client) resizeTiles() {
 	c.mu.Lock()
 	view := append([]*Session{}, c.view...)
-	cols, rows := c.cols, c.rows
+	rects := c.rects()
 	c.mu.Unlock()
-	widths := tileWidths(cols, len(view))
 	for i, s := range view {
-		s.resize(widths[i], rows-1)
+		s.resize(rects[i].w, rects[i].h)
 	}
 }
 
@@ -613,7 +613,7 @@ func (c *client) liveEvent(ev event) {
 		data := ev.data
 		s.mu.Lock()
 		mode := s.vt.Mode()
-		paste := s.hist.Paste
+		paste := mode&vt10x.ModePaste != 0
 		s.mu.Unlock()
 		if mode&vt10x.ModeAppCursor != 0 {
 			data = translateArrows(data)
@@ -652,7 +652,7 @@ func (c *client) liveMouse(m mouseEv) {
 	rows, cols := c.rows, c.cols
 	ranges := c.statusRanges
 	view := append([]*Session{}, c.view...)
-	focus := c.focus
+	focus, stacked := c.focus, c.stacked
 	c.mu.Unlock()
 
 	// clicks on the status bar focus or switch sessions
@@ -677,10 +677,9 @@ func (c *client) liveMouse(m mouseEv) {
 	}
 
 	// which tile is under the pointer?
-	widths := tileWidths(cols, len(view))
-	ti, tx := tileAt(widths, m.x)
+	ti, tx, ty := tileAt(tileRects(cols, rows, len(view), stacked), m.x, m.y)
 	if ti < 0 {
-		ti, tx = focus, m.x
+		ti, tx, ty = focus, m.x, m.y
 	}
 	s := view[ti]
 
@@ -696,7 +695,7 @@ func (c *client) liveMouse(m mouseEv) {
 	}
 	if appMouse {
 		if m.y < rows { // not our status row
-			s.writeInput(rebuildMouse(m, tx))
+			s.writeInput(rebuildMouse(m, tx, ty))
 		}
 		return
 	}
@@ -715,32 +714,20 @@ func (c *client) liveMouse(m mouseEv) {
 	}
 }
 
-// tileAt maps a 1-based screen column to (tile index, column within tile).
-// Returns -1 for the separator columns.
-func tileAt(widths []int, x int) (int, int) {
-	off := 0
-	for i, w := range widths {
-		if x >= off+1 && x <= off+w {
-			return i, x - off
-		}
-		off += w + 1
-	}
-	return -1, x
-}
-
-// rebuildMouse re-encodes a mouse event with a tile-local x coordinate,
+// rebuildMouse re-encodes a mouse event with tile-local coordinates,
 // keeping the encoding the terminal used.
-func rebuildMouse(m mouseEv, tx int) []byte {
+func rebuildMouse(m mouseEv, tx, ty int) []byte {
 	if len(m.raw) == 6 && m.raw[2] == 'M' { // X10
 		out := append([]byte{}, m.raw...)
 		out[4] = byte(32 + tx)
+		out[5] = byte(32 + ty)
 		return out
 	}
 	final := byte('m')
 	if m.press {
 		final = 'M'
 	}
-	return []byte(fmt.Sprintf("\x1b[<%d;%d;%d%c", m.btn, tx, m.y, final))
+	return []byte(fmt.Sprintf("\x1b[<%d;%d;%d%c", m.btn, tx, ty, final))
 }
 
 func wheelArrows(up, appCursor bool) []byte {
@@ -848,6 +835,12 @@ func (c *client) paletteEvent(ev event) {
 			c.mu.Unlock()
 		case keyCtrlD:
 			c.exit("detached · sessions still running · reattach with: perch")
+		case keyCtrlL: // flip between side by side and stacked
+			c.mu.Lock()
+			c.stacked = !c.stacked
+			view, focus := c.view, c.focus
+			c.mu.Unlock()
+			c.setView(view, focus)
 		case keyCtrlS:
 			c.mu.Lock()
 			list := c.filteredSessions()
@@ -898,19 +891,25 @@ func (c *client) paletteEvent(ev event) {
 	}
 }
 
+// tileHeight is the focused tile's height in rows. Caller must hold c.mu.
+func (c *client) tileHeight() int {
+	return c.rects()[c.focus].h
+}
+
 func (c *client) enterScroll() {
 	c.mu.Lock()
 	s := c.sess
-	rows := c.rows
+	h := c.tileHeight()
 	c.mu.Unlock()
 	s.mu.Lock()
-	total := s.hist.DocLen()
+	total := s.docLen()
 	first := s.hist.First()
+	scrolled := s.hist.Total() - first
 	s.mu.Unlock()
-	if total-first <= 1 {
-		return // only the in-progress line, nothing to scroll into
+	if scrolled == 0 {
+		return // nothing has scrolled off the screen yet
 	}
-	anchor := total - (rows - 1) - 3
+	anchor := total - h - 3
 	if anchor < first {
 		anchor = first
 	}
@@ -925,13 +924,13 @@ func (c *client) enterScroll() {
 func (c *client) scrollBy(delta int) {
 	c.mu.Lock()
 	s := c.sess
-	rows := c.rows
+	h := c.tileHeight()
 	c.mu.Unlock()
 	s.mu.Lock()
-	total := s.hist.DocLen()
+	total := s.docLen()
 	first := s.hist.First()
 	s.mu.Unlock()
-	bottom := total - (rows - 1)
+	bottom := total - h
 	if bottom < first {
 		bottom = first
 	}
@@ -960,10 +959,14 @@ func (c *client) scrollEvent(ev event) {
 			c.scrollBy(-1)
 		case keyDown:
 			c.scrollBy(1)
-		case keyPgUp:
-			c.scrollBy(-(c.rows - 2))
-		case keyPgDn:
-			c.scrollBy(c.rows - 2)
+		case keyPgUp, keyPgDn:
+			c.mu.Lock()
+			page := c.tileHeight() - 1
+			c.mu.Unlock()
+			if ev.key == keyPgUp {
+				page = -page
+			}
+			c.scrollBy(page)
 		case keyHome:
 			c.mu.Lock()
 			c.anchor = 0
@@ -989,7 +992,20 @@ func (c *client) scrollEvent(ev event) {
 			c.scrollBy(1 << 30)
 		}
 	case evMouse:
-		switch ev.mouse.btn {
+		m := ev.mouse
+		c.mu.Lock()
+		rects := c.rects()
+		focus := c.focus
+		c.mu.Unlock()
+		// wheel or click over another tile hands scrolling over to it
+		if ti, _, _ := tileAt(rects, m.x, m.y); ti >= 0 && ti != focus {
+			if m.btn == mouseWheelUp || (m.btn == 0 && m.press) {
+				c.closeOverlay()
+				c.liveMouse(m)
+			}
+			return
+		}
+		switch m.btn {
 		case mouseWheelUp:
 			c.scrollBy(-3)
 		case mouseWheelDown:
