@@ -1,3 +1,5 @@
 perch
 *.png.tmp
 /dist/
+/vmux
+.DS_Store
